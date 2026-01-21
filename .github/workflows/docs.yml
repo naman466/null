@@ -22,8 +22,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.75.0
 
       - name: Install mdBook
         run: cargo install mdbook --version 0.4.43
