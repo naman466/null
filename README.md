@@ -148,7 +148,7 @@ The documentation is written as a **learning resource**, not a formal textbook.
 ### Build Instructions
 
 ```bash
-git clone https://github.com/your-username/Null.git
+git clone https://github.com/naman466/Null.git
 cd Null
 
 mkdir build && cd build
@@ -179,5 +179,6 @@ This project is under active development and experimentation.
 ---
 
 ## License
+
 
 This project is licensed under the MIT License. See `LICENSE` for details.
