@@ -178,6 +178,10 @@ This project is under active development and experimentation.
 
 ---
 
+
+## TODO
+- Write Chapter 1 
+
 ## License
 
 
