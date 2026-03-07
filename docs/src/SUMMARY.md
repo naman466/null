@@ -25,4 +25,6 @@
 
 # Part V: Code Generation
 
-- [Chapter 12–13: C Code Emission and Loop Construction](part5/codegen.md)
+- [Chapter 12: C Code Emission](part5/codegen.md)
+- [Chapter 13: Loop Construction](part5/loop.md)
+
