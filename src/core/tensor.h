@@ -2,6 +2,8 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <cstddef>   
+#include <utility>   
 
 namespace null {
 
@@ -48,4 +50,37 @@ inline size_t dtype_size(DType dt) {
         case DType::BOOL:    return 1;
         default:             return 0;
     }
+} 
+
+// core tensor structure, metadata + optional constant data
+struct Tensor {
+    std::string name;
+    std::vector<int64_t> shape;    // -1 is dynamic / unknown
+    DType dtype = DType::UNDEFINED;
+    std::vector<uint8_t> data;     // raw bytes for constant tensors (initalizers)
+    bool is_constant = false;
+
+    Tensor() = default;
+    Tensor(std::string n, std::vector<int64_t> s, DType dt)
+        : name(std::move(n)), shape(std::move(s)), dtype(dt) {}
+
+    // total number of elements
+    int64_t num_elements() const {
+        if (shape.empty()) return 1; // scalar
+        int64_t total = 1;
+        for (int64_t d : shape) {
+            if (d < 0) return -1; // dynamic
+            total *= d;
+        }
+        return total;
+    }
+
+    // total bytes needed for this tensor
+    int64_t byte_size() const {
+        int64_t n = num_elements();
+        if (n < 0) return -1;
+        return n * static_cast<int64_t>(dtype_size(dtype));
+    }
+}; 
+
 } // namespace null
