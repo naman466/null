@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstddef>   
 #include <utility>   
+#include <cstring>
 
 namespace null {
 
@@ -81,6 +82,48 @@ struct Tensor {
         if (n < 0) return -1;
         return n * static_cast<int64_t>(dtype_size(dtype));
     }
-}; 
+
+    // set float data as constant
+    void set_float_data(const std::vector<float>& values) {
+        dtype = DType::FLOAT32;
+        is_constant = true;
+        data.resize(values.size() * 4);
+        std::memcpy(data.data(), values.data(), data.size());
+        if (shape.empty()) shape = {static_cast<int64_t>(values.size())};
+    }
+
+    void set_int64_data(const std::vector<int64_t>& values) {
+        dtype = DType::INT64;
+        is_constant = true;
+        data.resize(values.size() * 8);
+        std::memcpy(data.data(), values.data(), data.size());
+        if (shape.empty()) shape = {static_cast<int64_t>(values.size())};
+    }
+
+    // access constant data as typed view
+    const float* float_ptr() const {
+        if (dtype != DType::FLOAT32 || data.empty()) return nullptr;
+        return reinterpret_cast<const float*>(data.data());
+    }
+
+    const int64_t* int64_ptr() const {
+        if (dtype != DType::INT64 || data.empty()) return nullptr;
+        return reinterpret_cast<const int64_t*>(data.data());
+    }
+
+    std::string shape_str() const {
+        if (shape.empty()) return "[]";
+        std::string s = "[";
+        for (size_t i = 0; i < shape.size(); ++i) {
+            if (i) s += ", ";
+            s += std::to_string(shape[i]);
+        }
+        return s + "]";
+    }
+
+    bool same_shape(const Tensor& other) const {
+        return shape == other.shape;
+    }
+};
 
 } // namespace null
