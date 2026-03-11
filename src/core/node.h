@@ -183,5 +183,69 @@ inline OpType str_to_optype(const std::string& s) {
     return OpType::Unknown;
 }
 
+// A single computation node in the graph
+struct Node {
+    std::string name;
+    OpType op;
+    std::vector<std::string> inputs;   // tensor names consumed
+    std::vector<std::string> outputs;  // tensor names produced
+    std::unordered_map<std::string, Attribute> attrs;
+    bool is_dead = false; // marked for DCE
+
+    Node() : op(OpType::Unknown) {}
+    Node(std::string n, OpType o,
+         std::vector<std::string> ins,
+         std::vector<std::string> outs)
+        : name(std::move(n)), op(o),
+          inputs(std::move(ins)), outputs(std::move(outs)) {}
+
+    void add_attr(const std::string& key, AttrValue val) {
+        attrs.emplace(key, Attribute{key, std::move(val)});
+    }
+
+    bool has_attr(const std::string& key) const {
+        return attrs.count(key) > 0;
+    }
+
+    const Attribute& get_attr(const std::string& key) const {
+        auto it = attrs.find(key);
+        if (it == attrs.end())
+            throw std::runtime_error("Node '" + name + "' missing attribute '" + key + "'");
+        return it->second;
+    }
+
+    // Convenience: try to get attr with default
+    int64_t attr_int(const std::string& key, int64_t def = 0) const {
+        auto it = attrs.find(key);
+        if (it == attrs.end()) return def;
+        return it->second.as_int();
+    }
+
+    float attr_float(const std::string& key, float def = 0.0f) const {
+        auto it = attrs.find(key);
+        if (it == attrs.end()) return def;
+        return it->second.as_float();
+    }
+
+    std::string attr_str(const std::string& key, std::string def = "") const {
+        auto it = attrs.find(key);
+        if (it == attrs.end()) return def;
+        return it->second.as_string();
+    }
+
+    std::vector<int64_t> attr_ints(const std::string& key,
+                                    std::vector<int64_t> def = {}) const {
+        auto it = attrs.find(key);
+        if (it == attrs.end()) return def;
+        return it->second.as_ints();
+    }
+
+    std::vector<float> attr_floats(const std::string& key,
+                                    std::vector<float> def = {}) const {
+        auto it = attrs.find(key);
+        if (it == attrs.end()) return def;
+        return it->second.as_floats();
+    }
+};
 
 } // namespace null
