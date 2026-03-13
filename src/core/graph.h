@@ -6,7 +6,8 @@
 #include <unordered_set>   
 #include <algorithm>       
 #include <stdexcept>    
-#include <cstddef>         
+#include <cstddef>      
+#include <sstream>   
 #include "node.h"
 #include "tensor.h"
 
@@ -137,6 +138,80 @@ public:
         }
         return order;
     }
+
+    // return nodes in topological order and skip dead ones
+    std::vector<const Node*> sorted_nodes() const {
+        auto order = topological_sort();
+        std::vector<const Node*> result;
+        for (size_t idx : order) {
+            if (!nodes[idx].is_dead) {
+                result.push_back(&nodes[idx]);
+            }
+        }
+        return result;
+    }
+
+    // validate graph and check if all inputs are defined
+    std::vector<std::string> validate() const {
+        std::vector<std::string> errors;
+
+        // build list of all define d names
+        std::unordered_set<std::string> defined;
+        for (auto& s : inputs) defined.insert(s);
+        for (auto& [name, _] : initializers) defined.insert(name);
+
+        // traverse in topo order and check
+        std::vector<size_t> order;
+        try {
+            order = topological_sort();
+        } catch (std::exception& e) {
+            errors.push_back(std::string("Cycle detected: ") + e.what());
+            return errors;
+        }
+
+        for (size_t idx : order) {
+            const Node& n = nodes[idx];
+            if (n.is_dead) continue;
+            for (auto& inp : n.inputs) {
+                if (!inp.empty() && defined.count(inp) == 0) {
+                    errors.push_back("Node '" + n.name + "' uses undefined tensor '" + inp + "'");
+                }
+            }
+            for (auto& out : n.outputs) {
+                if (!out.empty()) defined.insert(out);
+            }
+        }
+
+        for (auto& out : outputs) {
+            if (defined.count(out) == 0) {
+                errors.push_back("Graph output '" + out + "' is not defined");
+            }
+        }
+        return errors;
+    }
+
+    // count live nodes
+    size_t live_node_count() const {
+        size_t count = 0;
+        for (auto& n : nodes) {
+            if (!n.is_dead) count++;
+        }
+        return count;
+    }
+
+    std::string summary() const {
+        std::ostringstream ss;
+        ss << "Graph: " << name << "\n";
+        ss << "  Inputs: ";
+        for (auto& s : inputs) ss << s << " ";
+        ss << "\n  Outputs: ";
+        for (auto& s : outputs) ss << s << " ";
+        ss << "\n  Nodes: " << nodes.size()
+           << " (live: " << live_node_count() << ")\n";
+        ss << "  Initializers: " << initializers.size() << "\n";
+        return ss.str();
+    }
+    
 };
 
 } // namespace null
