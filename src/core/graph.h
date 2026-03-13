@@ -1,7 +1,12 @@
+#pragma once
 #include <string>
 #include <vector>
 #include <unordered_map>
 #include <utility>
+#include <unordered_set>   
+#include <algorithm>       
+#include <stdexcept>    
+#include <cstddef>         
 #include "node.h"
 #include "tensor.h"
 
@@ -66,6 +71,71 @@ public:
         auto it = value_info.find(name);
         if (it != value_info.end()) return &it->second;
         return nullptr;
+    }
+
+    // topo sort of the nodes using Kahn's algo
+    // returns sorted node indices, stable sort
+    std::vector<size_t> topological_sort() const {
+        size_t N = nodes.size();
+        // map from output tensor name -> node index
+        std::unordered_map<std::string, size_t> producer;
+        for (size_t i = 0; i < N; ++i) {
+            for (auto& out : nodes[i].outputs) {
+                producer[out] = i;
+            }
+        }
+
+        // build adjacency: node i -> set of nodes that consume i's outputs
+        std::vector<std::unordered_set<size_t>> successors(N);
+        std::vector<int> in_degree(N, 0);
+
+        for (size_t i = 0; i < N; ++i) {
+            for (auto& inp : nodes[i].inputs) {
+                auto it = producer.find(inp);
+                if (it != producer.end()) {
+                    size_t src = it->second;
+                    if (successors[src].insert(i).second) {
+                        in_degree[i]++;
+                    }
+                }
+            }
+        }
+
+        // Kahn's algorithm uses queue
+        // maintain original order by using sorted ready list
+        std::vector<size_t> ready;
+        for (size_t i = 0; i < N; ++i) {
+            if (in_degree[i] == 0) ready.push_back(i);
+        }
+
+        std::vector<size_t> order;
+        order.reserve(N);
+
+        while (!ready.empty()) {
+            // pick smallest index for stability 
+            size_t idx = ready.front();
+            ready.erase(ready.begin());
+            order.push_back(idx);
+
+            // collect successors and add newly addd ones
+            std::vector<size_t> newly_ready;
+            for (size_t succ : successors[idx]) {
+                if (--in_degree[succ] == 0) {
+                    newly_ready.push_back(succ);
+                }
+            }
+            std::sort(newly_ready.begin(), newly_ready.end());
+            // insert in sorted position to maintain stability
+            for (size_t nr : newly_ready) {
+                auto it = std::lower_bound(ready.begin(), ready.end(), nr);
+                ready.insert(it, nr);
+            }
+        }
+
+        if (order.size() != N) {
+            throw std::runtime_error("Graph has a cycle; topological sort failed");
+        }
+        return order;
     }
 };
 
