@@ -144,3 +144,24 @@ TEST(tensor_set_float_data) {
     CHECK_NEAR(t.float_ptr()[0], 1.0f, 1e-6f);
     CHECK_NEAR(t.float_ptr()[3], 4.0f, 1e-6f);
 }
+
+int main() {
+    std::cout << "Starting tests.................\n";
+
+    SUITE("Tensor IR");
+    RUN(tensor_basic_construction);
+    RUN(tensor_scalar);
+    RUN(tensor_dynamic_dim);
+    RUN(tensor_set_float_data);
+
+    // results
+    std::cout << "Results: " << s_pass << " passed, " << s_fail << " failed\n";
+
+    if (!s_failures.empty()) {
+        std::cout << "\nFailures:\n";
+        for (const auto& f : s_failures) {
+            std::cout << f << "\n";
+        }
+    }
+    return s_fail == 0 ? 0 : 1;
+}
