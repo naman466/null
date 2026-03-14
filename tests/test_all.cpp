@@ -63,3 +63,84 @@ inline void check_eq_impl(const A& a, const B& b, const char* expr, int line) {
     try { expr; } catch(...) { _threw = true; } \
     if (!_threw) throw std::runtime_error("CHECK_THROWS: no exception at line " + std::to_string(__LINE__)); \
 } while(0)
+
+// TESTS -- GRAPH
+
+static Graph make_simple_matmul_graph() {
+    // input: x[1,4], weight: W[4,2], bias: b[2] -> output: y[1,2]
+    Graph g("test_matmul");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+
+    // value info
+    g.add_value_info(Tensor{"x",  {1, 4}, DType::FLOAT32});
+    g.add_value_info(Tensor{"mm", {1, 2}, DType::FLOAT32});
+    g.add_value_info(Tensor{"y",  {1, 2}, DType::FLOAT32});
+
+    // initializers
+    Tensor W{"W", {4, 2}, DType::FLOAT32};
+    W.set_float_data({1,0, 0,1, 1,0, 0,1});
+    W.shape = {4, 2};
+    g.add_initializer(W);
+
+    Tensor b{"b", {2}, DType::FLOAT32};
+    b.set_float_data({0.5f, -0.5f});
+    g.add_initializer(b);
+
+    // matmul node
+    Node mm("mm_node", OpType::MatMul, {"x", "W"}, {"mm"});
+    g.add_node(mm);
+
+    // add bias
+    Node add("add_node", OpType::Add, {"mm", "b"}, {"y"});
+    g.add_node(add);
+
+    return g;
+}
+
+static Graph make_relu_graph() {
+    Graph g("test_relu");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor{"x", {1, 4}, DType::FLOAT32});
+    g.add_value_info(Tensor{"y", {1, 4}, DType::FLOAT32});
+    Node relu("relu", OpType::Relu, {"x"}, {"y"});
+    g.add_node(relu);
+    return g;
+}
+
+// TESTS - IR
+
+TEST(tensor_basic_construction) {
+    Tensor t("t", {2, 3}, DType::FLOAT32);
+    CHECK_EQ(t.name, "t");
+    CHECK_EQ(t.shape.size(), 2u);
+    CHECK_EQ(t.shape[0], 2);
+    CHECK_EQ(t.shape[1], 3);
+    CHECK_EQ(t.dtype, DType::FLOAT32);
+    CHECK_EQ(t.num_elements(), 6);
+    CHECK_EQ(t.byte_size(), 24);
+}
+
+TEST(tensor_scalar) {
+    Tensor t("s", {}, DType::FLOAT32);
+    CHECK_EQ(t.num_elements(), 1);
+    CHECK_EQ(t.byte_size(), 4);
+}
+
+TEST(tensor_dynamic_dim) {
+    Tensor t("d", {-1, 3}, DType::FLOAT32);
+    CHECK_EQ(t.num_elements(), -1);
+    CHECK_EQ(t.byte_size(), -1);
+}
+
+TEST(tensor_set_float_data) {
+    Tensor t;
+    t.name = "w";
+    t.shape = {2, 2};
+    t.set_float_data({1.0f, 2.0f, 3.0f, 4.0f});
+    CHECK(t.is_constant);
+    CHECK(t.float_ptr() != nullptr);
+    CHECK_NEAR(t.float_ptr()[0], 1.0f, 1e-6f);
+    CHECK_NEAR(t.float_ptr()[3], 4.0f, 1e-6f);
+}
