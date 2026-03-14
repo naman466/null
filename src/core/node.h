@@ -61,38 +61,38 @@ struct Attribute {
     bool has_tensor() const { return std::holds_alternative<Tensor>(value); }
 };
 
-// Supported operator types
-// Mirrors a subset of ONNX standard operators
+// supported operator types
+// mirrors a subset of ONNX standard operators
 enum class OpType {
-    // Arithmetic
+    // arithmetic
     Add, Sub, Mul, Div,
-    // Activation
+    // activation
     Relu, Sigmoid, Tanh, Softmax,
-    // Linear algebra
+    // linear algebra
     Gemm, MatMul,
-    // Convolution
+    // convolution
     Conv,
-    // Pooling
+    // pooling
     MaxPool, AveragePool, GlobalAveragePool,
-    // Normalization
+    // normalization
     BatchNormalization,
-    // Shape
+    // shape
     Reshape, Flatten, Transpose, Squeeze, Unsqueeze,
-    // Elementwise
+    // elementwise
     Exp, Log, Sqrt, Abs, Neg, Pow,
-    // Reduction
+    // reduction
     ReduceMean, ReduceSum, ReduceMax,
-    // Data
+    // data
     Gather, Concat, Split, Slice,
-    // Misc
+    // misc
     Dropout, Cast, Clip,
-    // Fused (created by optimizer)
+    // fused (created by optimizer)
     ReluFused,    // e.g., Gemm + Relu
-    // Constant
+    // constant
     Constant,
-    // Identity (no-op, used internally)
+    // identity (no-op, used internally)
     Identity,
-    // Unknown / passthrough
+    // unknown / passthrough
     Unknown
 };
 
@@ -183,7 +183,7 @@ inline OpType str_to_optype(const std::string& s) {
     return OpType::Unknown;
 }
 
-// A single computation node in the graph
+// a single computation node in the graph
 struct Node {
     std::string name;
     OpType op;
