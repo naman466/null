@@ -168,8 +168,8 @@ This project is under active development and experimentation.
 ### Planned Milestones
 
 * [x] Project setup and build system
-* [ ] Core graph IR
-* [ ] Topological sorting
+* [x] Core graph IR
+* [x] Topological sorting
 * [ ] ONNX frontend
 * [ ] Basic C code generation
 * [ ] End-to-end execution on a simple model
