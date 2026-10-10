@@ -17,6 +17,7 @@ target_include_directories(null_core INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/src"
 # onnx frontend
 add_library(null_frontend STATIC
     src/frontend/protobuf.cpp
+    src/frontend/onnx.cpp
 )
 target_link_libraries(null_frontend PUBLIC null_core)
 
@@ -28,7 +29,7 @@ target_link_libraries(null_cli PRIVATE null_core)
 enable_testing()
 
 # one executable per suite, built from tests/test_<suite>.cpp
-set(TEST_SUITES tensor node graph protobuf)
+set(TEST_SUITES tensor node graph protobuf onnx)
 
 foreach(suite IN LISTS TEST_SUITES)
     add_executable(test_${suite} tests/test_main.cpp tests/test_${suite}.cpp)
