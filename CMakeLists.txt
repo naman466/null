@@ -9,10 +9,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_compile_options(-Wall -Wextra -Wpedantic)
 
-file(GLOB_RECURSE CORE_SOURCES "src/core/*.cpp")
-add_library(null_core ${CORE_SOURCES})
+# core IR is header-only
+add_library(null_core INTERFACE)
 
-target_include_directories(null_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(null_core INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 add_executable(null_cli src/main.cpp)
 
