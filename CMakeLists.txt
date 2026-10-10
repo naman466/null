@@ -21,9 +21,14 @@ target_link_libraries(null_cli PRIVATE null_core)
 # tests
 enable_testing()
 
-add_executable(null_tests tests/test_all.cpp)
-target_link_libraries(null_tests PRIVATE null_core)
+# one executable per suite, built from tests/test_<suite>.cpp
+set(TEST_SUITES tensor node graph)
 
-add_test(NAME null_tests COMMAND null_tests)
+foreach(suite IN LISTS TEST_SUITES)
+    add_executable(test_${suite} tests/test_main.cpp tests/test_${suite}.cpp)
+    target_link_libraries(test_${suite} PRIVATE null_core)
+    target_compile_definitions(test_${suite} PRIVATE NULL_TEST_SUITE="${suite}")
+    add_test(NAME ${suite} COMMAND test_${suite})
+endforeach()
 
 
