@@ -2,6 +2,7 @@
 
 #include <bit>
 #include <cstring>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -28,6 +29,60 @@ enum TensorField : uint32_t {
 };
 
 constexpr int32_t kDataLocationExternal = 1;
+
+// AttributeProto field numbers
+enum AttributeField : uint32_t {
+    kAttrName        = 1,
+    kAttrF           = 2,
+    kAttrI           = 3,
+    kAttrS           = 4,
+    kAttrT           = 5,
+    kAttrG           = 6,
+    kAttrFloats      = 7,
+    kAttrInts        = 8,
+    kAttrStrings     = 9,
+    kAttrTensors     = 10,
+    kAttrGraphs      = 11,
+    kAttrTp          = 14,
+    kAttrTypeProtos  = 15,
+    kAttrType        = 20,
+    kAttrRefAttrName = 21,
+    kAttrSparse      = 22,
+    kAttrSparseList  = 23,
+};
+
+// AttributeProto.AttributeType
+enum AttributeType : int32_t {
+    kAttrTypeUndefined     = 0,
+    kAttrTypeFloat         = 1,
+    kAttrTypeInt           = 2,
+    kAttrTypeString        = 3,
+    kAttrTypeTensor        = 4,
+    kAttrTypeGraph         = 5,
+    kAttrTypeFloats        = 6,
+    kAttrTypeInts          = 7,
+    kAttrTypeStrings       = 8,
+    kAttrTypeTensors       = 9,
+    kAttrTypeGraphs        = 10,
+    kAttrTypeSparseTensor  = 11,
+    kAttrTypeSparseTensors = 12,
+    kAttrTypeTypeProto     = 13,
+    kAttrTypeTypeProtos    = 14,
+};
+
+const char* attr_type_name(int32_t type) {
+    switch (type) {
+        case kAttrTypeGraph:         return "GRAPH";
+        case kAttrTypeStrings:       return "STRINGS";
+        case kAttrTypeTensors:       return "TENSORS";
+        case kAttrTypeGraphs:        return "GRAPHS";
+        case kAttrTypeSparseTensor:  return "SPARSE_TENSOR";
+        case kAttrTypeSparseTensors: return "SPARSE_TENSORS";
+        case kAttrTypeTypeProto:     return "TYPE_PROTO";
+        case kAttrTypeTypeProtos:    return "TYPE_PROTOS";
+        default:                     return "UNDEFINED";
+    }
+}
 
 // copy values into data as type T
 template<typename T, typename Src>
@@ -160,6 +215,96 @@ Tensor parse_tensor(pb::Reader r) {
     }
 
     return t;
+}
+
+Attribute parse_attribute(pb::Reader r) {
+    std::string name;
+    int32_t type = kAttrTypeUndefined;
+    bool is_ref = false;
+
+    float f = 0.0f;
+    int64_t i = 0;
+    std::string s;
+    std::optional<pb::Reader> t;   // parsed once the type is known
+    std::vector<float> floats;
+    std::vector<int64_t> ints;
+    bool has_f = false, has_i = false, has_s = false;
+
+    // value kind seen on the wire for a type we don't support,
+    // used when the type field is missing
+    int32_t unsupported_seen = kAttrTypeUndefined;
+
+    while (!r.eof()) {
+        pb::Tag tag = r.read_tag();
+        switch (tag.field) {
+            case kAttrName:   name = r.read_string(); break;
+            case kAttrType:   type = r.read_int32(); break;
+            case kAttrF:      f = r.read_float(); has_f = true; break;
+            case kAttrI:      i = r.read_int64(); has_i = true; break;
+            case kAttrS:      s = r.read_string(); has_s = true; break;
+            case kAttrT:      t = r.read_message(); break;
+            case kAttrFloats: r.read_repeated_float(tag.wire, floats); break;
+            case kAttrInts:   r.read_repeated_int64(tag.wire, ints); break;
+            case kAttrRefAttrName: is_ref = true; r.skip(tag.wire); break;
+            case kAttrG:          unsupported_seen = kAttrTypeGraph;         r.skip(tag.wire); break;
+            case kAttrStrings:    unsupported_seen = kAttrTypeStrings;       r.skip(tag.wire); break;
+            case kAttrTensors:    unsupported_seen = kAttrTypeTensors;       r.skip(tag.wire); break;
+            case kAttrGraphs:     unsupported_seen = kAttrTypeGraphs;        r.skip(tag.wire); break;
+            case kAttrTp:         unsupported_seen = kAttrTypeTypeProto;     r.skip(tag.wire); break;
+            case kAttrTypeProtos: unsupported_seen = kAttrTypeTypeProtos;    r.skip(tag.wire); break;
+            case kAttrSparse:     unsupported_seen = kAttrTypeSparseTensor;  r.skip(tag.wire); break;
+            case kAttrSparseList: unsupported_seen = kAttrTypeSparseTensors; r.skip(tag.wire); break;
+            default:              r.skip(tag.wire); break;
+        }
+    }
+
+    if (name.empty()) throw OnnxError("attribute without a name");
+
+    auto fail = [&](const std::string& msg) -> OnnxError {
+        return OnnxError("attribute '" + name + "': " + msg);
+    };
+
+    // references to an enclosing function's attributes only appear in function bodies
+    if (is_ref) throw fail("ref_attr_name is not supported");
+
+    // very old models omit the type, infer it from the field that was set
+    if (type == kAttrTypeUndefined) {
+        if      (t)                    type = kAttrTypeTensor;
+        else if (has_s)                type = kAttrTypeString;
+        else if (!floats.empty())      type = kAttrTypeFloats;
+        else if (!ints.empty())        type = kAttrTypeInts;
+        else if (has_f)                type = kAttrTypeFloat;
+        else if (has_i)                type = kAttrTypeInt;
+        else if (unsupported_seen)     type = unsupported_seen;
+        else throw fail("no type and no value");
+    }
+
+    // missing scalars take the protobuf default, like the official parser
+    switch (type) {
+        case kAttrTypeFloat:  return Attribute(name, f);
+        case kAttrTypeInt:    return Attribute(name, i);
+        case kAttrTypeString: return Attribute(name, s);
+        case kAttrTypeFloats: return Attribute(name, std::move(floats));
+        case kAttrTypeInts:   return Attribute(name, std::move(ints));
+        case kAttrTypeTensor:
+            if (!t) throw fail("TENSOR attribute has no tensor");
+            try {
+                return Attribute(name, parse_tensor(*t));
+            } catch (const OnnxError& e) {
+                throw fail(e.detail());
+            }
+        case kAttrTypeGraph:
+        case kAttrTypeStrings:
+        case kAttrTypeTensors:
+        case kAttrTypeGraphs:
+        case kAttrTypeSparseTensor:
+        case kAttrTypeSparseTensors:
+        case kAttrTypeTypeProto:
+        case kAttrTypeTypeProtos:
+            throw fail(std::string(attr_type_name(type)) + " attributes are not supported");
+        default:
+            throw fail("unknown attribute type " + std::to_string(type));
+    }
 }
 
 } // namespace null::onnx

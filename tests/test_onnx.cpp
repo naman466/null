@@ -305,3 +305,204 @@ TEST(tensor_error_names_tensor) {
         CHECK(std::string(e.what()).find("conv1.weight") != std::string::npos);
     }
 }
+
+// TESTS - ATTRIBUTE
+
+// AttributeProto field numbers
+enum : uint32_t {
+    A_NAME = 1, A_F = 2, A_I = 3, A_S = 4, A_T = 5, A_G = 6, A_FLOATS = 7, A_INTS = 8,
+    A_STRINGS = 9, A_TENSORS = 10, A_DOC = 13, A_TYPE = 20, A_REF = 21, A_SPARSE = 22,
+};
+
+// AttributeProto.AttributeType
+enum : int64_t {
+    AT_FLOAT = 1, AT_INT = 2, AT_STRING = 3, AT_TENSOR = 4, AT_GRAPH = 5,
+    AT_FLOATS = 6, AT_INTS = 7, AT_STRINGS = 8, AT_TENSORS = 9, AT_SPARSE = 11,
+};
+
+static PbWriter attr_header(const std::string& name, int64_t type) {
+    PbWriter w;
+    w.bytes_field(A_NAME, name);
+    w.int_field(A_TYPE, type);
+    return w;
+}
+
+TEST(attr_float) {
+    PbWriter w = attr_header("alpha", AT_FLOAT);
+    w.float_field(A_F, 0.01f);
+    Attribute a = parse_attribute(w.reader());
+    CHECK_EQ(a.name, "alpha");
+    CHECK(a.has_float());
+    CHECK_EQ(a.as_float(), 0.01f);
+}
+
+TEST(attr_int) {
+    PbWriter w = attr_header("axis", AT_INT);
+    w.int_field(A_I, -1);
+    Attribute a = parse_attribute(w.reader());
+    CHECK(a.has_int());
+    CHECK_EQ(a.as_int(), -1);
+}
+
+TEST(attr_string) {
+    PbWriter w = attr_header("auto_pad", AT_STRING);
+    w.bytes_field(A_S, "SAME_UPPER");
+    Attribute a = parse_attribute(w.reader());
+    CHECK(a.has_string());
+    CHECK_EQ(a.as_string(), "SAME_UPPER");
+}
+
+TEST(attr_ints_unpacked_and_packed) {
+    // proto2 writes ints unpacked, but packed must be accepted too
+    PbWriter a = attr_header("pads", AT_INTS);
+    a.int_field(A_INTS, 1).int_field(A_INTS, 2).int_field(A_INTS, 1).int_field(A_INTS, 2);
+    CHECK_EQ(parse_attribute(a.reader()).as_ints(), (std::vector<int64_t>{1, 2, 1, 2}));
+
+    PbWriter b = attr_header("perm", AT_INTS);
+    b.packed_ints(A_INTS, {0, 2, 1});
+    CHECK_EQ(parse_attribute(b.reader()).as_ints(), (std::vector<int64_t>{0, 2, 1}));
+}
+
+TEST(attr_floats) {
+    PbWriter w = attr_header("scales", AT_FLOATS);
+    w.float_field(A_FLOATS, 1.0f).float_field(A_FLOATS, 2.0f);
+    Attribute a = parse_attribute(w.reader());
+    CHECK(a.has_floats());
+    CHECK_EQ(a.as_floats(), (std::vector<float>{1.0f, 2.0f}));
+}
+
+TEST(attr_empty_list_uses_type) {
+    // an empty list has no value fields on the wire, only the type says what it is
+    Attribute ints = parse_attribute(attr_header("pads", AT_INTS).reader());
+    CHECK(ints.has_ints());
+    CHECK(ints.as_ints().empty());
+
+    Attribute floats = parse_attribute(attr_header("scales", AT_FLOATS).reader());
+    CHECK(floats.has_floats());
+    CHECK(floats.as_floats().empty());
+}
+
+TEST(attr_missing_scalar_uses_default) {
+    // protobuf default for an unset scalar, as the official parser does
+    Attribute i = parse_attribute(attr_header("keepdims", AT_INT).reader());
+    CHECK_EQ(i.as_int(), 0);
+    Attribute f = parse_attribute(attr_header("beta", AT_FLOAT).reader());
+    CHECK_EQ(f.as_float(), 0.0f);
+    Attribute s = parse_attribute(attr_header("mode", AT_STRING).reader());
+    CHECK_EQ(s.as_string(), "");
+}
+
+TEST(attr_tensor) {
+    // the value of a Constant node
+    PbWriter t = tensor_header("", T_FLOAT, {2});
+    t.packed_floats(FLOAT_DATA, {1.5f, -1.5f});
+    PbWriter w = attr_header("value", AT_TENSOR);
+    w.message_field(A_T, t);
+
+    Attribute a = parse_attribute(w.reader());
+    CHECK(a.has_tensor());
+    CHECK_EQ(a.as_tensor().shape, (std::vector<int64_t>{2}));
+    CHECK_EQ(values_of<float>(a.as_tensor()), (std::vector<float>{1.5f, -1.5f}));
+}
+
+TEST(attr_type_inferred_when_missing) {
+    // models from before the type field existed
+    PbWriter i;
+    i.bytes_field(A_NAME, "axis").int_field(A_I, 3);
+    CHECK(parse_attribute(i.reader()).has_int());
+
+    PbWriter f;
+    f.bytes_field(A_NAME, "eps").float_field(A_F, 1e-5f);
+    CHECK(parse_attribute(f.reader()).has_float());
+
+    PbWriter s;
+    s.bytes_field(A_NAME, "mode").bytes_field(A_S, "constant");
+    CHECK(parse_attribute(s.reader()).has_string());
+
+    PbWriter is;
+    is.bytes_field(A_NAME, "shape").int_field(A_INTS, 1).int_field(A_INTS, 2);
+    CHECK(parse_attribute(is.reader()).has_ints());
+
+    PbWriter fs;
+    fs.bytes_field(A_NAME, "scales").float_field(A_FLOATS, 2.0f);
+    CHECK(parse_attribute(fs.reader()).has_floats());
+
+    PbWriter t;
+    PbWriter body = tensor_header("", T_INT64, {1});
+    body.packed_ints(INT64_DATA, {5});
+    t.bytes_field(A_NAME, "value").message_field(A_T, body);
+    CHECK(parse_attribute(t.reader()).has_tensor());
+}
+
+TEST(attr_unknown_fields_skipped) {
+    PbWriter w;
+    w.bytes_field(A_DOC, "slope of the negative part");
+    w.int_field(A_TYPE, AT_FLOAT);
+    w.int_field(99, 1);
+    w.float_field(A_F, 0.2f);
+    w.bytes_field(A_NAME, "alpha");
+    Attribute a = parse_attribute(w.reader());
+    CHECK_EQ(a.name, "alpha");
+    CHECK_EQ(a.as_float(), 0.2f);
+}
+
+TEST(attr_unsupported_types_throw) {
+    PbWriter g = attr_header("then_branch", AT_GRAPH);
+    g.message_field(A_G, PbWriter{});
+    CHECK_THROWS(parse_attribute(g.reader()));
+
+    PbWriter ss = attr_header("activations", AT_STRINGS);
+    ss.bytes_field(A_STRINGS, "Sigmoid").bytes_field(A_STRINGS, "Tanh");
+    CHECK_THROWS(parse_attribute(ss.reader()));
+
+    PbWriter ts = attr_header("tensors", AT_TENSORS);
+    ts.message_field(A_TENSORS, PbWriter{});
+    CHECK_THROWS(parse_attribute(ts.reader()));
+
+    PbWriter sp = attr_header("sparse_value", AT_SPARSE);
+    sp.message_field(A_SPARSE, PbWriter{});
+    CHECK_THROWS(parse_attribute(sp.reader()));
+
+    // no type field, unsupported value on the wire
+    PbWriter g2;
+    g2.bytes_field(A_NAME, "body").message_field(A_G, PbWriter{});
+    CHECK_THROWS(parse_attribute(g2.reader()));
+
+    CHECK_THROWS(parse_attribute(attr_header("x", 999).reader()));
+}
+
+TEST(attr_errors) {
+    // no name
+    PbWriter a;
+    a.int_field(A_TYPE, AT_INT).int_field(A_I, 1);
+    CHECK_THROWS(parse_attribute(a.reader()));
+
+    // no type and no value
+    PbWriter b;
+    b.bytes_field(A_NAME, "axis");
+    CHECK_THROWS(parse_attribute(b.reader()));
+
+    // TENSOR without a tensor
+    CHECK_THROWS(parse_attribute(attr_header("value", AT_TENSOR).reader()));
+
+    // reference to a function attribute
+    PbWriter r = attr_header("alpha", AT_FLOAT);
+    r.bytes_field(A_REF, "outer_alpha");
+    CHECK_THROWS(parse_attribute(r.reader()));
+}
+
+TEST(attr_tensor_error_names_attribute) {
+    // a bad embedded tensor reports both the attribute and the tensor problem
+    PbWriter t = tensor_header("", T_FLOAT16, {1});
+    PbWriter w = attr_header("value", AT_TENSOR);
+    w.message_field(A_T, t);
+    try {
+        parse_attribute(w.reader());
+        throw std::runtime_error("expected OnnxError");
+    } catch (const OnnxError& e) {
+        std::string msg = e.what();
+        CHECK(msg.find("attribute 'value'") != std::string::npos);
+        CHECK(msg.find("unsupported data type") != std::string::npos);
+        CHECK_EQ(msg.find("onnx:", 1), std::string::npos);   // prefix only once
+    }
+}
