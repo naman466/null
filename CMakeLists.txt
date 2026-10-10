@@ -18,4 +18,12 @@ add_executable(null_cli src/main.cpp)
 
 target_link_libraries(null_cli PRIVATE null_core)
 
+# tests
+enable_testing()
+
+add_executable(null_tests tests/test_all.cpp)
+target_link_libraries(null_tests PRIVATE null_core)
+
+add_test(NAME null_tests COMMAND null_tests)
+
 
