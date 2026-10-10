@@ -4,7 +4,7 @@
 
 The project focuses on understanding how neural network models can be **compiled ahead of time** into low-level code. Given a trained model, Null analyzes its computation graph, applies a small set of well-defined optimizations, and generates a **standalone C source file (`model.c`)** for inference.
 
-This repository is primarily a **learning and documentation project**. It is intended to explore compiler design concepts as they apply to deep learning systems, rather than to serve as a production-ready framework.
+This repository is primarily a **learning project**. It is intended to explore compiler design concepts as they apply to deep learning systems, rather than to serve as a production-ready framework.
 
 ---
 
@@ -94,7 +94,6 @@ These passes are intentionally kept small and explicit.
 
 ```text
 Null/
-├── docs/               # Educational documentation ("book"-style notes)
 ├── src/
 │   ├── core/           # Graph, Node, and Tensor IR definitions
 │   ├── frontend/       # ONNX parsing and IR construction
@@ -104,36 +103,6 @@ Null/
 ├── tests/              # Unit tests
 └── CMakeLists.txt      # Build configuration
 ```
-
----
-
-## Documentation
-
-This project is accompanied by a structured set of notes that document:
-
-* Design decisions
-* Background theory
-* Implementation details
-* Mistakes, trade-offs, and lessons learned
-
-The documentation is written as a **learning resource**, not a formal textbook.
-
-**Documentation site:**
-[https://null-compiler.github.io/book/](https://null-compiler.github.io/book/) *(Coming soon)*
-
-### Current Outline
-
-* **Part I: Intermediate Representation**
-  Graph structure, tensors, and scheduling
-
-* **Part II: Frontend**
-  ONNX parsing and model lowering
-
-* **Part III: Optimization Passes**
-  Graph traversal, folding, and fusion
-
-* **Part IV: Backend**
-  Liveness analysis, memory planning, and code emission
 
 ---
 
@@ -178,11 +147,6 @@ This project is under active development and experimentation.
 
 ---
 
-
-## TODO
-- Write Chapter 1 
-
 ## License
-
 
 This project is licensed under the MIT License. See `LICENSE` for details.
