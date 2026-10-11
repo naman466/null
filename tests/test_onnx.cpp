@@ -506,3 +506,180 @@ TEST(attr_tensor_error_names_attribute) {
         CHECK_EQ(msg.find("onnx:", 1), std::string::npos);   // prefix only once
     }
 }
+
+// TESTS - NODE
+
+// NodeProto field numbers
+enum : uint32_t {
+    N_INPUT = 1, N_OUTPUT = 2, N_NAME = 3, N_OP_TYPE = 4, N_ATTRIBUTE = 5,
+    N_DOC = 6, N_DOMAIN = 7,
+};
+
+static PbWriter node_proto(const std::string& name, const std::string& op,
+                           const std::vector<std::string>& inputs,
+                           const std::vector<std::string>& outputs) {
+    PbWriter w;
+    for (auto& s : inputs) w.bytes_field(N_INPUT, s);
+    for (auto& s : outputs) w.bytes_field(N_OUTPUT, s);
+    if (!name.empty()) w.bytes_field(N_NAME, name);
+    w.bytes_field(N_OP_TYPE, op);
+    return w;
+}
+
+static PbWriter int_attr(const std::string& name, int64_t v) {
+    PbWriter a = attr_header(name, AT_INT);
+    a.int_field(A_I, v);
+    return a;
+}
+
+TEST(node_basic) {
+    PbWriter w = node_proto("/fc1/Gemm", "Gemm", {"x", "fc1.weight", "fc1.bias"}, {"h"});
+    Node n = parse_node(w.reader());
+    CHECK_EQ(n.name, "/fc1/Gemm");
+    CHECK_EQ(n.op, OpType::Gemm);
+    CHECK_EQ(n.inputs, (std::vector<std::string>{"x", "fc1.weight", "fc1.bias"}));
+    CHECK_EQ(n.outputs, (std::vector<std::string>{"h"}));
+    CHECK(n.attrs.empty());
+    CHECK(!n.is_dead);
+}
+
+TEST(node_with_attributes) {
+    PbWriter pads = attr_header("pads", AT_INTS);
+    pads.packed_ints(A_INTS, {1, 1, 1, 1});
+    PbWriter alpha = attr_header("auto_pad", AT_STRING);
+    alpha.bytes_field(A_S, "NOTSET");
+
+    PbWriter w = node_proto("conv", "Conv", {"x", "w"}, {"y"});
+    w.message_field(N_ATTRIBUTE, int_attr("group", 1));
+    w.message_field(N_ATTRIBUTE, pads);
+    w.message_field(N_ATTRIBUTE, alpha);
+
+    Node n = parse_node(w.reader());
+    CHECK_EQ(n.attrs.size(), 3u);
+    CHECK_EQ(n.attr_int("group"), 1);
+    CHECK_EQ(n.attr_ints("pads"), (std::vector<int64_t>{1, 1, 1, 1}));
+    CHECK_EQ(n.attr_str("auto_pad"), "NOTSET");
+    CHECK_EQ(n.get_attr("pads").name, "pads");
+}
+
+TEST(node_optional_inputs_kept) {
+    // "" marks a skipped optional input, positions must be preserved
+    PbWriter w = node_proto("clip", "Clip", {"x", "", "max"}, {"y"});
+    Node n = parse_node(w.reader());
+    CHECK_EQ(n.inputs, (std::vector<std::string>{"x", "", "max"}));
+}
+
+TEST(node_multiple_outputs) {
+    PbWriter w = node_proto("split", "Split", {"x"}, {"a", "b", "c"});
+    Node n = parse_node(w.reader());
+    CHECK_EQ(n.outputs, (std::vector<std::string>{"a", "b", "c"}));
+}
+
+TEST(node_constant_no_inputs) {
+    PbWriter t = tensor_header("", T_INT64, {2});
+    t.packed_ints(INT64_DATA, {1, -1});
+    PbWriter value = attr_header("value", AT_TENSOR);
+    value.message_field(A_T, t);
+
+    PbWriter w = node_proto("c", "Constant", {}, {"shape"});
+    w.message_field(N_ATTRIBUTE, value);
+
+    Node n = parse_node(w.reader());
+    CHECK_EQ(n.op, OpType::Constant);
+    CHECK(n.inputs.empty());
+    CHECK_EQ(n.get_attr("value").as_tensor().num_elements(), 2);
+}
+
+TEST(node_unnamed) {
+    // helper.make_node leaves the name empty
+    PbWriter w = node_proto("", "Relu", {"x"}, {"y"});
+    Node n = parse_node(w.reader());
+    CHECK(n.name.empty());
+    CHECK_EQ(n.op, OpType::Relu);
+}
+
+TEST(node_default_domain) {
+    PbWriter a = node_proto("r", "Relu", {"x"}, {"y"});
+    a.bytes_field(N_DOMAIN, "");
+    CHECK_EQ(parse_node(a.reader()).op, OpType::Relu);
+
+    PbWriter b = node_proto("r", "Relu", {"x"}, {"y"});
+    b.bytes_field(N_DOMAIN, "ai.onnx");
+    CHECK_EQ(parse_node(b.reader()).op, OpType::Relu);
+}
+
+TEST(node_unknown_fields_skipped) {
+    PbWriter w;
+    w.bytes_field(N_DOC, "first layer");
+    w.bytes_field(N_OP_TYPE, "Relu");
+    w.int_field(99, 3);
+    w.bytes_field(N_OUTPUT, "y");
+    w.bytes_field(N_INPUT, "x");
+    Node n = parse_node(w.reader());
+    CHECK_EQ(n.op, OpType::Relu);
+    CHECK_EQ(n.inputs, (std::vector<std::string>{"x"}));
+    CHECK_EQ(n.outputs, (std::vector<std::string>{"y"}));
+}
+
+// TESTS - NODE ERRORS
+
+static std::string node_error(const PbWriter& w) {
+    try {
+        parse_node(w.reader());
+    } catch (const OnnxError& e) {
+        return e.what();
+    }
+    throw std::runtime_error("expected OnnxError");
+}
+
+TEST(node_unsupported_op_throws) {
+    std::string msg = node_error(node_proto("/lstm/LSTM", "LSTM", {"x"}, {"y"}));
+    CHECK(msg.find("'/lstm/LSTM'") != std::string::npos);
+    CHECK(msg.find("unsupported operator 'LSTM'") != std::string::npos);
+
+    // op names are case sensitive
+    CHECK_THROWS(parse_node(node_proto("r", "relu", {"x"}, {"y"}).reader()));
+    // optimizer-only ops never come from a model
+    CHECK_THROWS(parse_node(node_proto("f", "ReluFused", {"x"}, {"y"}).reader()));
+}
+
+TEST(node_other_domain_throws) {
+    PbWriter a = node_proto("g", "Gelu", {"x"}, {"y"});
+    a.bytes_field(N_DOMAIN, "com.microsoft");
+    CHECK(node_error(a).find("domain 'com.microsoft'") != std::string::npos);
+
+    // known op name, but from another domain, is still rejected
+    PbWriter b = node_proto("r", "Relu", {"x"}, {"y"});
+    b.bytes_field(N_DOMAIN, "ai.onnx.ml");
+    CHECK_THROWS(parse_node(b.reader()));
+}
+
+TEST(node_missing_op_type_throws) {
+    PbWriter w;
+    w.bytes_field(N_INPUT, "x").bytes_field(N_OUTPUT, "y");
+    CHECK_THROWS(parse_node(w.reader()));
+}
+
+TEST(node_duplicate_attribute_throws) {
+    PbWriter w = node_proto("s", "Softmax", {"x"}, {"y"});
+    w.message_field(N_ATTRIBUTE, int_attr("axis", 1));
+    w.message_field(N_ATTRIBUTE, int_attr("axis", -1));
+    CHECK(node_error(w).find("duplicate attribute 'axis'") != std::string::npos);
+}
+
+TEST(node_bad_attribute_names_node) {
+    PbWriter w = node_proto("/rnn/Loop", "Gemm", {"a", "b"}, {"y"});
+    PbWriter g = attr_header("body", AT_GRAPH);
+    g.message_field(A_G, PbWriter{});
+    w.message_field(N_ATTRIBUTE, g);
+
+    std::string msg = node_error(w);
+    CHECK(msg.find("node '/rnn/Loop' (Gemm)") != std::string::npos);
+    CHECK(msg.find("attribute 'body'") != std::string::npos);
+    CHECK_EQ(msg.find("onnx:", 1), std::string::npos);
+}
+
+TEST(node_unnamed_error_context) {
+    std::string msg = node_error(node_proto("", "NonMaxSuppression", {"b", "s"}, {"i"}));
+    CHECK(msg.find("node <unnamed> (NonMaxSuppression)") != std::string::npos);
+}

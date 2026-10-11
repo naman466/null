@@ -34,4 +34,8 @@ Tensor parse_tensor(pb::Reader r);
 // supports FLOAT, INT, STRING, TENSOR, FLOATS and INTS
 Attribute parse_attribute(pb::Reader r);
 
+// NodeProto -> Node
+// only the default onnx domain is supported, unknown operators throw
+Node parse_node(pb::Reader r);
+
 } // namespace null::onnx

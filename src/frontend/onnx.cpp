@@ -70,6 +70,16 @@ enum AttributeType : int32_t {
     kAttrTypeTypeProtos    = 14,
 };
 
+// NodeProto field numbers
+enum NodeField : uint32_t {
+    kNodeInput     = 1,
+    kNodeOutput    = 2,
+    kNodeName      = 3,
+    kNodeOpType    = 4,
+    kNodeAttribute = 5,
+    kNodeDomain    = 7,
+};
+
 const char* attr_type_name(int32_t type) {
     switch (type) {
         case kAttrTypeGraph:         return "GRAPH";
@@ -305,6 +315,52 @@ Attribute parse_attribute(pb::Reader r) {
         default:
             throw fail("unknown attribute type " + std::to_string(type));
     }
+}
+
+Node parse_node(pb::Reader r) {
+    Node n;
+    std::string op_type;
+    std::string domain;
+    std::vector<pb::Reader> attrs;   // parsed after we know the node's name
+
+    while (!r.eof()) {
+        pb::Tag tag = r.read_tag();
+        switch (tag.field) {
+            case kNodeInput:     n.inputs.push_back(r.read_string()); break;
+            case kNodeOutput:    n.outputs.push_back(r.read_string()); break;
+            case kNodeName:      n.name = r.read_string(); break;
+            case kNodeOpType:    op_type = r.read_string(); break;
+            case kNodeAttribute: attrs.push_back(r.read_message()); break;
+            case kNodeDomain:    domain = r.read_string(); break;
+            default:             r.skip(tag.wire); break;
+        }
+    }
+
+    auto fail = [&](const std::string& msg) -> OnnxError {
+        std::string where = n.name.empty() ? "<unnamed>" : "'" + n.name + "'";
+        if (!op_type.empty()) where += " (" + op_type + ")";
+        return OnnxError("node " + where + ": " + msg);
+    };
+
+    if (op_type.empty()) throw fail("missing op_type");
+    if (!domain.empty() && domain != "ai.onnx")
+        throw fail("unsupported operator domain '" + domain + "'");
+
+    n.op = str_to_optype(op_type);
+    if (n.op == OpType::Unknown) throw fail("unsupported operator '" + op_type + "'");
+
+    for (const pb::Reader& ar : attrs) {
+        Attribute a;
+        try {
+            a = parse_attribute(ar);
+        } catch (const OnnxError& e) {
+            throw fail(e.detail());
+        }
+        if (n.has_attr(a.name)) throw fail("duplicate attribute '" + a.name + "'");
+        n.attrs.emplace(a.name, std::move(a));
+    }
+
+    return n;
 }
 
 } // namespace null::onnx
