@@ -80,6 +80,34 @@ enum NodeField : uint32_t {
     kNodeDomain    = 7,
 };
 
+// ValueInfoProto / TypeProto / TensorShapeProto field numbers
+enum ValueInfoField : uint32_t {
+    kValueInfoName = 1,
+    kValueInfoType = 2,
+};
+
+enum TypeField : uint32_t {
+    kTypeTensor       = 1,
+    kTypeSequence     = 4,
+    kTypeMap          = 5,
+    kTypeSparseTensor = 8,
+    kTypeOptional     = 9,
+};
+
+enum TensorTypeField : uint32_t {
+    kTensorTypeElemType = 1,
+    kTensorTypeShape    = 2,
+};
+
+enum ShapeField : uint32_t {
+    kShapeDim = 1,
+};
+
+enum DimField : uint32_t {
+    kDimValue = 1,
+    kDimParam = 2,
+};
+
 const char* attr_type_name(int32_t type) {
     switch (type) {
         case kAttrTypeGraph:         return "GRAPH";
@@ -315,6 +343,93 @@ Attribute parse_attribute(pb::Reader r) {
         default:
             throw fail("unknown attribute type " + std::to_string(type));
     }
+}
+
+ValueInfo parse_value_info(pb::Reader r) {
+    ValueInfo vi;
+    std::optional<pb::Reader> type;
+
+    while (!r.eof()) {
+        pb::Tag tag = r.read_tag();
+        switch (tag.field) {
+            case kValueInfoName: vi.name = r.read_string(); break;
+            case kValueInfoType: type = r.read_message(); break;
+            default:             r.skip(tag.wire); break;
+        }
+    }
+
+    if (vi.name.empty()) throw OnnxError("value info without a name");
+
+    auto fail = [&](const std::string& msg) -> OnnxError {
+        return OnnxError("value '" + vi.name + "': " + msg);
+    };
+
+    // no type at all, nothing is known about the value
+    if (!type) return vi;
+
+    // TypeProto, only tensors are supported
+    std::optional<pb::Reader> tensor_type;
+    while (!type->eof()) {
+        pb::Tag tag = type->read_tag();
+        switch (tag.field) {
+            case kTypeTensor:       tensor_type = type->read_message(); break;
+            case kTypeSequence:     throw fail("sequence types are not supported");
+            case kTypeMap:          throw fail("map types are not supported");
+            case kTypeSparseTensor: throw fail("sparse tensor types are not supported");
+            case kTypeOptional:     throw fail("optional types are not supported");
+            default:                type->skip(tag.wire); break;
+        }
+    }
+    if (!tensor_type) return vi;
+
+    // TypeProto.Tensor
+    int32_t elem_type = 0;
+    std::optional<pb::Reader> shape;
+    while (!tensor_type->eof()) {
+        pb::Tag tag = tensor_type->read_tag();
+        switch (tag.field) {
+            case kTensorTypeElemType: elem_type = tensor_type->read_int32(); break;
+            case kTensorTypeShape:    shape = tensor_type->read_message(); break;
+            default:                  tensor_type->skip(tag.wire); break;
+        }
+    }
+
+    if (elem_type != 0) {
+        try {
+            vi.dtype = to_dtype(elem_type);
+        } catch (const OnnxError&) {
+            throw fail("unsupported data type " + std::to_string(elem_type));
+        }
+    }
+
+    // a missing shape means unknown rank, an empty one means a scalar
+    if (!shape) return vi;
+    vi.has_shape = true;
+
+    while (!shape->eof()) {
+        pb::Tag tag = shape->read_tag();
+        if (tag.field != kShapeDim) { shape->skip(tag.wire); continue; }
+
+        // TensorShapeProto.Dimension, a fixed value, a symbolic name, or neither
+        pb::Reader dim = shape->read_message();
+        std::optional<int64_t> value;
+        std::string param;
+        while (!dim.eof()) {
+            pb::Tag dt = dim.read_tag();
+            switch (dt.field) {
+                // a oneof, the last field on the wire wins
+                case kDimValue: value = dim.read_int64(); param.clear(); break;
+                case kDimParam: param = dim.read_string(); value.reset(); break;
+                default:        dim.skip(dt.wire); break;
+            }
+        }
+        if (value && *value < 0)
+            throw fail("negative dimension " + std::to_string(*value));
+        vi.shape.push_back(value ? *value : -1);
+        vi.dim_params.push_back(param);
+    }
+
+    return vi;
 }
 
 Node parse_node(pb::Reader r) {

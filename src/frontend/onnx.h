@@ -34,6 +34,23 @@ Tensor parse_tensor(pb::Reader r);
 // supports FLOAT, INT, STRING, TENSOR, FLOATS and INTS
 Attribute parse_attribute(pb::Reader r);
 
+// a graph input, output or intermediate value as declared in the model
+// kept separate from Tensor because onnx distinguishes "unknown shape"
+// from a scalar (empty shape), and names symbolic dims
+struct ValueInfo {
+    std::string name;
+    DType dtype = DType::UNDEFINED;        // UNDEFINED when no type is given
+    bool has_shape = false;                // false means unknown rank
+    std::vector<int64_t> shape;            // -1 for unknown or symbolic dims
+    std::vector<std::string> dim_params;   // symbolic dim names, "" for fixed dims
+
+    // metadata-only tensor, unknown rank must be resolved by the caller
+    Tensor to_tensor() const { return Tensor(name, shape, dtype); }
+};
+
+// ValueInfoProto -> ValueInfo, only tensor types are supported
+ValueInfo parse_value_info(pb::Reader r);
+
 // NodeProto -> Node
 // only the default onnx domain is supported, unknown operators throw
 Node parse_node(pb::Reader r);

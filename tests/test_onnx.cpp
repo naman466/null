@@ -683,3 +683,175 @@ TEST(node_unnamed_error_context) {
     std::string msg = node_error(node_proto("", "NonMaxSuppression", {"b", "s"}, {"i"}));
     CHECK(msg.find("node <unnamed> (NonMaxSuppression)") != std::string::npos);
 }
+
+// TESTS - VALUE INFO
+
+// ValueInfoProto / TypeProto / TensorShapeProto field numbers
+enum : uint32_t {
+    VI_NAME = 1, VI_TYPE = 2, VI_DOC = 3,
+    TP_TENSOR = 1, TP_SEQUENCE = 4, TP_MAP = 5, TP_SPARSE = 8, TP_OPTIONAL = 9, TP_DENOTATION = 6,
+    TT_ELEM_TYPE = 1, TT_SHAPE = 2,
+    SH_DIM = 1,
+    DIM_VALUE = 1, DIM_PARAM = 2, DIM_DENOTATION = 3,
+};
+
+static PbWriter dim_value(int64_t v) { PbWriter d; d.int_field(DIM_VALUE, v); return d; }
+static PbWriter dim_param(const std::string& p) { PbWriter d; d.bytes_field(DIM_PARAM, p); return d; }
+
+static PbWriter shape_of(const std::vector<PbWriter>& dims) {
+    PbWriter s;
+    for (auto& d : dims) s.message_field(SH_DIM, d);
+    return s;
+}
+
+// ValueInfoProto for a tensor, shape omitted when has_shape is false
+static PbWriter value_info(const std::string& name, int64_t elem_type,
+                           const std::vector<PbWriter>& dims, bool has_shape = true) {
+    PbWriter tt;
+    tt.int_field(TT_ELEM_TYPE, elem_type);
+    if (has_shape) tt.message_field(TT_SHAPE, shape_of(dims));
+    PbWriter type;
+    type.message_field(TP_TENSOR, tt);
+    PbWriter vi;
+    vi.bytes_field(VI_NAME, name);
+    vi.message_field(VI_TYPE, type);
+    return vi;
+}
+
+TEST(value_info_fixed_shape) {
+    PbWriter w = value_info("input", T_FLOAT, {dim_value(1), dim_value(3), dim_value(224), dim_value(224)});
+    ValueInfo vi = parse_value_info(w.reader());
+    CHECK_EQ(vi.name, "input");
+    CHECK_EQ(vi.dtype, DType::FLOAT32);
+    CHECK(vi.has_shape);
+    CHECK_EQ(vi.shape, (std::vector<int64_t>{1, 3, 224, 224}));
+    CHECK_EQ(vi.dim_params, (std::vector<std::string>{"", "", "", ""}));
+
+    Tensor t = vi.to_tensor();
+    CHECK_EQ(t.name, "input");
+    CHECK_EQ(t.num_elements(), 3 * 224 * 224);
+    CHECK(!t.is_constant);
+    CHECK(t.data.empty());
+}
+
+TEST(value_info_symbolic_dims) {
+    // pytorch dynamic_axes write named dims like "batch_size"
+    PbWriter w = value_info("x", T_FLOAT, {dim_param("batch_size"), dim_value(784)});
+    ValueInfo vi = parse_value_info(w.reader());
+    CHECK_EQ(vi.shape, (std::vector<int64_t>{-1, 784}));
+    CHECK_EQ(vi.dim_params, (std::vector<std::string>{"batch_size", ""}));
+    CHECK_EQ(vi.to_tensor().num_elements(), -1);
+}
+
+TEST(value_info_unknown_dim) {
+    // a dimension with neither value nor param is unknown
+    PbWriter w = value_info("x", T_FLOAT, {PbWriter{}, dim_value(10)});
+    ValueInfo vi = parse_value_info(w.reader());
+    CHECK_EQ(vi.shape, (std::vector<int64_t>{-1, 10}));
+    CHECK_EQ(vi.dim_params, (std::vector<std::string>{"", ""}));
+}
+
+TEST(value_info_zero_dim) {
+    PbWriter w = value_info("e", T_FLOAT, {dim_value(0), dim_value(4)});
+    ValueInfo vi = parse_value_info(w.reader());
+    CHECK_EQ(vi.shape, (std::vector<int64_t>{0, 4}));
+    CHECK_EQ(vi.to_tensor().num_elements(), 0);
+}
+
+TEST(value_info_scalar_vs_unknown_rank) {
+    // an empty shape is a scalar, a missing shape is unknown rank
+    ValueInfo scalar = parse_value_info(value_info("s", T_FLOAT, {}).reader());
+    CHECK(scalar.has_shape);
+    CHECK(scalar.shape.empty());
+
+    ValueInfo unknown = parse_value_info(value_info("u", T_FLOAT, {}, false).reader());
+    CHECK(!unknown.has_shape);
+    CHECK(unknown.shape.empty());
+    CHECK_EQ(unknown.dtype, DType::FLOAT32);
+}
+
+TEST(value_info_no_type) {
+    // intermediate values may carry only a name
+    PbWriter w;
+    w.bytes_field(VI_NAME, "h");
+    ValueInfo vi = parse_value_info(w.reader());
+    CHECK_EQ(vi.name, "h");
+    CHECK_EQ(vi.dtype, DType::UNDEFINED);
+    CHECK(!vi.has_shape);
+}
+
+TEST(value_info_no_elem_type) {
+    PbWriter w = value_info("x", 0, {dim_value(2)});
+    ValueInfo vi = parse_value_info(w.reader());
+    CHECK_EQ(vi.dtype, DType::UNDEFINED);
+    CHECK_EQ(vi.shape, (std::vector<int64_t>{2}));
+}
+
+TEST(value_info_other_dtypes) {
+    CHECK_EQ(parse_value_info(value_info("i", T_INT64, {dim_value(2)}).reader()).dtype, DType::INT64);
+    CHECK_EQ(parse_value_info(value_info("b", T_BOOL, {}).reader()).dtype, DType::BOOL);
+    CHECK_EQ(parse_value_info(value_info("u", T_UINT8, {}).reader()).dtype, DType::UINT8);
+}
+
+TEST(value_info_dim_oneof_last_wins) {
+    PbWriter a;
+    a.int_field(DIM_VALUE, 5).bytes_field(DIM_PARAM, "N");
+    PbWriter b;
+    b.bytes_field(DIM_PARAM, "N").int_field(DIM_VALUE, 5);
+    ValueInfo vi = parse_value_info(value_info("x", T_FLOAT, {a, b}).reader());
+    CHECK_EQ(vi.shape, (std::vector<int64_t>{-1, 5}));
+    CHECK_EQ(vi.dim_params, (std::vector<std::string>{"N", ""}));
+}
+
+TEST(value_info_unknown_fields_skipped) {
+    PbWriter d = dim_value(8);
+    d.bytes_field(DIM_DENOTATION, "DATA_BATCH");
+    PbWriter tt;
+    tt.message_field(TT_SHAPE, shape_of({d}));
+    tt.int_field(TT_ELEM_TYPE, T_FLOAT);
+    PbWriter type;
+    type.bytes_field(TP_DENOTATION, "TENSOR");
+    type.message_field(TP_TENSOR, tt);
+    PbWriter w;
+    w.bytes_field(VI_DOC, "model input");
+    w.message_field(VI_TYPE, type);
+    w.int_field(99, 1);
+    w.bytes_field(VI_NAME, "x");
+
+    ValueInfo vi = parse_value_info(w.reader());
+    CHECK_EQ(vi.name, "x");
+    CHECK_EQ(vi.dtype, DType::FLOAT32);
+    CHECK_EQ(vi.shape, (std::vector<int64_t>{8}));
+}
+
+// TESTS - VALUE INFO ERRORS
+
+TEST(value_info_non_tensor_types_throw) {
+    for (uint32_t field : {TP_SEQUENCE, TP_MAP, TP_SPARSE, TP_OPTIONAL}) {
+        PbWriter type;
+        type.message_field(field, PbWriter{});
+        PbWriter w;
+        w.bytes_field(VI_NAME, "seq");
+        w.message_field(VI_TYPE, type);
+        CHECK_THROWS(parse_value_info(w.reader()));
+    }
+}
+
+TEST(value_info_errors) {
+    // unsupported element type, names the value
+    try {
+        parse_value_info(value_info("half_in", T_FLOAT16, {dim_value(1)}).reader());
+        throw std::runtime_error("expected OnnxError");
+    } catch (const OnnxError& e) {
+        CHECK(std::string(e.what()).find("value 'half_in'") != std::string::npos);
+    }
+
+    // negative dim_value, including -1
+    CHECK_THROWS(parse_value_info(value_info("x", T_FLOAT, {dim_value(-1)}).reader()));
+    CHECK_THROWS(parse_value_info(value_info("x", T_FLOAT, {dim_value(-5)}).reader()));
+
+    // no name
+    PbWriter w;
+    w.message_field(VI_TYPE, PbWriter{});
+    CHECK_THROWS(parse_value_info(w.reader()));
+}
