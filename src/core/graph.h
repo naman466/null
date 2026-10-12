@@ -3,8 +3,10 @@
 #include <vector>
 #include <unordered_map>
 #include <utility>
-#include <unordered_set>   
-#include <algorithm>       
+#include <unordered_set>
+#include <algorithm>
+#include <queue>
+#include <functional>
 #include <stdexcept>    
 #include <cstddef>      
 #include <sstream>   
@@ -102,34 +104,24 @@ public:
             }
         }
 
-        // Kahn's algorithm uses queue
-        // maintain original order by using sorted ready list
-        std::vector<size_t> ready;
+        // Kahn's algorithm with a min-heap as the ready queue
+        // always taking the smallest ready index keeps the original order
+        // wherever dependencies allow, in O(N log N)
+        std::priority_queue<size_t, std::vector<size_t>, std::greater<size_t>> ready;
         for (size_t i = 0; i < N; ++i) {
-            if (in_degree[i] == 0) ready.push_back(i);
+            if (in_degree[i] == 0) ready.push(i);
         }
 
         std::vector<size_t> order;
         order.reserve(N);
 
         while (!ready.empty()) {
-            // pick smallest index for stability 
-            size_t idx = ready.front();
-            ready.erase(ready.begin());
+            size_t idx = ready.top();
+            ready.pop();
             order.push_back(idx);
 
-            // collect successors and add newly addd ones
-            std::vector<size_t> newly_ready;
             for (size_t succ : successors[idx]) {
-                if (--in_degree[succ] == 0) {
-                    newly_ready.push_back(succ);
-                }
-            }
-            std::sort(newly_ready.begin(), newly_ready.end());
-            // insert in sorted position to maintain stability
-            for (size_t nr : newly_ready) {
-                auto it = std::lower_bound(ready.begin(), ready.end(), nr);
-                ready.insert(it, nr);
+                if (--in_degree[succ] == 0) ready.push(succ);
             }
         }
 
@@ -155,7 +147,23 @@ public:
     std::vector<std::string> validate() const {
         std::vector<std::string> errors;
 
-        // build list of all define d names
+        // every tensor must have exactly one source: a graph input, an
+        // initializer, or a single live node
+        std::unordered_map<std::string, std::string> source;
+        for (auto& s : inputs) source.emplace(s, "graph input");
+        for (auto& [name, _] : initializers) source.emplace(name, "initializer");
+        for (auto& n : nodes) {
+            if (n.is_dead) continue;
+            for (auto& out : n.outputs) {
+                if (out.empty()) continue;   // omitted optional output
+                auto [it, inserted] = source.emplace(out, "node '" + n.name + "'");
+                if (!inserted)
+                    errors.push_back("Tensor '" + out + "' is produced by both " +
+                                     it->second + " and node '" + n.name + "'");
+            }
+        }
+
+        // build list of all defined names
         std::unordered_set<std::string> defined;
         for (auto& s : inputs) defined.insert(s);
         for (auto& [name, _] : initializers) defined.insert(name);

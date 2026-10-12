@@ -3,6 +3,7 @@
 #include <bit>
 #include <cstring>
 #include <optional>
+#include <stdexcept>
 #include <string_view>
 #include <vector>
 
@@ -170,16 +171,16 @@ Tensor parse_tensor(pb::Reader r) {
         pb::Tag tag = r.read_tag();
         switch (tag.field) {
             case kTensorDims:         r.read_repeated_int64(tag.wire, dims); break;
-            case kTensorDataType:     data_type = r.read_int32(); break;
+            case kTensorDataType:     data_type = r.read_int32(tag); break;
             case kTensorFloatData:    r.read_repeated_float(tag.wire, float_data); break;
             case kTensorInt32Data:    r.read_repeated_int64(tag.wire, int32_data); break;
             case kTensorInt64Data:    r.read_repeated_int64(tag.wire, int64_data); break;
-            case kTensorName:         name = r.read_string(); break;
-            case kTensorRawData:      raw = r.read_bytes(); has_raw = true; break;
+            case kTensorName:         name = r.read_string(tag); break;
+            case kTensorRawData:      raw = r.read_bytes(tag); has_raw = true; break;
             case kTensorDoubleData:   r.read_repeated_double(tag.wire, double_data); break;
             case kTensorExternalData: external = true; r.skip(tag.wire); break;
             case kTensorDataLocation:
-                if (r.read_int32() == kDataLocationExternal) external = true;
+                if (r.read_int32(tag) == kDataLocationExternal) external = true;
                 break;
             default:                  r.skip(tag.wire); break;
         }
@@ -206,7 +207,16 @@ Tensor parse_tensor(pb::Reader r) {
                 + !int64_data.empty() + !double_data.empty();
     if (sources > 1) throw fail("data stored in more than one field");
 
-    const size_t count = static_cast<size_t>(t.num_elements());
+    // sizes from the shape, overflow-checked so a huge shape can't wrap
+    // around to match a small or empty payload
+    size_t count, expected_bytes;
+    try {
+        count = static_cast<size_t>(t.num_elements());
+        expected_bytes = static_cast<size_t>(t.byte_size());
+    } catch (const std::overflow_error&) {
+        throw fail("shape " + t.shape_str() + " is too large");
+    }
+
     auto check_count = [&](size_t got) {
         if (got != count)
             throw fail("expected " + std::to_string(count) + " values, got " + std::to_string(got));
@@ -216,11 +226,13 @@ Tensor parse_tensor(pb::Reader r) {
     };
 
     if (has_raw) {
-        const size_t expected = count * dtype_size(t.dtype);
-        if (raw.size() != expected)
+        if (raw.size() != expected_bytes)
             throw fail("raw_data has " + std::to_string(raw.size()) +
-                       " bytes, expected " + std::to_string(expected));
+                       " bytes, expected " + std::to_string(expected_bytes));
         t.data.assign(raw.begin(), raw.end());
+        // same 0/1 guarantee as bools from int32_data
+        if (t.dtype == DType::BOOL)
+            for (auto& b : t.data) b = (b != 0);
     } else if (!float_data.empty()) {
         require_dtype(t.dtype == DType::FLOAT32, "float_data");
         check_count(float_data.size());
@@ -275,12 +287,12 @@ Attribute parse_attribute(pb::Reader r) {
     while (!r.eof()) {
         pb::Tag tag = r.read_tag();
         switch (tag.field) {
-            case kAttrName:   name = r.read_string(); break;
-            case kAttrType:   type = r.read_int32(); break;
-            case kAttrF:      f = r.read_float(); has_f = true; break;
-            case kAttrI:      i = r.read_int64(); has_i = true; break;
-            case kAttrS:      s = r.read_string(); has_s = true; break;
-            case kAttrT:      t = r.read_message(); break;
+            case kAttrName:   name = r.read_string(tag); break;
+            case kAttrType:   type = r.read_int32(tag); break;
+            case kAttrF:      f = r.read_float(tag); has_f = true; break;
+            case kAttrI:      i = r.read_int64(tag); has_i = true; break;
+            case kAttrS:      s = r.read_string(tag); has_s = true; break;
+            case kAttrT:      t = r.read_message(tag); break;
             case kAttrFloats: r.read_repeated_float(tag.wire, floats); break;
             case kAttrInts:   r.read_repeated_int64(tag.wire, ints); break;
             case kAttrRefAttrName: is_ref = true; r.skip(tag.wire); break;
@@ -352,8 +364,8 @@ ValueInfo parse_value_info(pb::Reader r) {
     while (!r.eof()) {
         pb::Tag tag = r.read_tag();
         switch (tag.field) {
-            case kValueInfoName: vi.name = r.read_string(); break;
-            case kValueInfoType: type = r.read_message(); break;
+            case kValueInfoName: vi.name = r.read_string(tag); break;
+            case kValueInfoType: type = r.read_message(tag); break;
             default:             r.skip(tag.wire); break;
         }
     }
@@ -372,7 +384,7 @@ ValueInfo parse_value_info(pb::Reader r) {
     while (!type->eof()) {
         pb::Tag tag = type->read_tag();
         switch (tag.field) {
-            case kTypeTensor:       tensor_type = type->read_message(); break;
+            case kTypeTensor:       tensor_type = type->read_message(tag); break;
             case kTypeSequence:     throw fail("sequence types are not supported");
             case kTypeMap:          throw fail("map types are not supported");
             case kTypeSparseTensor: throw fail("sparse tensor types are not supported");
@@ -388,8 +400,8 @@ ValueInfo parse_value_info(pb::Reader r) {
     while (!tensor_type->eof()) {
         pb::Tag tag = tensor_type->read_tag();
         switch (tag.field) {
-            case kTensorTypeElemType: elem_type = tensor_type->read_int32(); break;
-            case kTensorTypeShape:    shape = tensor_type->read_message(); break;
+            case kTensorTypeElemType: elem_type = tensor_type->read_int32(tag); break;
+            case kTensorTypeShape:    shape = tensor_type->read_message(tag); break;
             default:                  tensor_type->skip(tag.wire); break;
         }
     }
@@ -411,15 +423,15 @@ ValueInfo parse_value_info(pb::Reader r) {
         if (tag.field != kShapeDim) { shape->skip(tag.wire); continue; }
 
         // TensorShapeProto.Dimension, a fixed value, a symbolic name, or neither
-        pb::Reader dim = shape->read_message();
+        pb::Reader dim = shape->read_message(tag);
         std::optional<int64_t> value;
         std::string param;
         while (!dim.eof()) {
             pb::Tag dt = dim.read_tag();
             switch (dt.field) {
                 // a oneof, the last field on the wire wins
-                case kDimValue: value = dim.read_int64(); param.clear(); break;
-                case kDimParam: param = dim.read_string(); value.reset(); break;
+                case kDimValue: value = dim.read_int64(dt); param.clear(); break;
+                case kDimParam: param = dim.read_string(dt); value.reset(); break;
                 default:        dim.skip(dt.wire); break;
             }
         }
@@ -441,12 +453,12 @@ Node parse_node(pb::Reader r) {
     while (!r.eof()) {
         pb::Tag tag = r.read_tag();
         switch (tag.field) {
-            case kNodeInput:     n.inputs.push_back(r.read_string()); break;
-            case kNodeOutput:    n.outputs.push_back(r.read_string()); break;
-            case kNodeName:      n.name = r.read_string(); break;
-            case kNodeOpType:    op_type = r.read_string(); break;
-            case kNodeAttribute: attrs.push_back(r.read_message()); break;
-            case kNodeDomain:    domain = r.read_string(); break;
+            case kNodeInput:     n.inputs.push_back(r.read_string(tag)); break;
+            case kNodeOutput:    n.outputs.push_back(r.read_string(tag)); break;
+            case kNodeName:      n.name = r.read_string(tag); break;
+            case kNodeOpType:    op_type = r.read_string(tag); break;
+            case kNodeAttribute: attrs.push_back(r.read_message(tag)); break;
+            case kNodeDomain:    domain = r.read_string(tag); break;
             default:             r.skip(tag.wire); break;
         }
     }

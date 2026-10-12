@@ -5,6 +5,7 @@
 #include <cstddef>   
 #include <utility>   
 #include <cstring>
+#include <stdexcept>
 
 namespace null {
 
@@ -65,22 +66,35 @@ struct Tensor {
     Tensor(std::string n, std::vector<int64_t> s, DType dt)
         : name(std::move(n)), shape(std::move(s)), dtype(dt) {}
 
-    // total number of elements
+    // total number of elements, -1 if any dim is dynamic
+    // throws std::overflow_error if the count does not fit in int64
     int64_t num_elements() const {
         if (shape.empty()) return 1; // scalar
-        int64_t total = 1;
+        bool has_zero = false;
         for (int64_t d : shape) {
             if (d < 0) return -1; // dynamic
-            total *= d;
+            if (d == 0) has_zero = true;
+        }
+        if (has_zero) return 0;   // before multiplying, so huge dims can't overflow
+        int64_t total = 1;
+        for (int64_t d : shape) {
+            if (__builtin_mul_overflow(total, d, &total))
+                throw std::overflow_error("tensor '" + name + "' shape " + shape_str() +
+                                          " has too many elements");
         }
         return total;
     }
 
-    // total bytes needed for this tensor
+    // total bytes needed for this tensor, -1 if dynamic
+    // throws std::overflow_error if the size does not fit in int64
     int64_t byte_size() const {
         int64_t n = num_elements();
         if (n < 0) return -1;
-        return n * static_cast<int64_t>(dtype_size(dtype));
+        int64_t bytes;
+        if (__builtin_mul_overflow(n, static_cast<int64_t>(dtype_size(dtype)), &bytes))
+            throw std::overflow_error("tensor '" + name + "' shape " + shape_str() +
+                                      " is too large");
+        return bytes;
     }
 
     // set float data as constant

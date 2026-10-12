@@ -4,6 +4,24 @@
 
 namespace null::pb {
 
+constexpr uint64_t kMaxFieldNumber = (1u << 29) - 1;
+
+static const char* wire_name(WireType w) {
+    switch (w) {
+        case WireType::VARINT: return "VARINT";
+        case WireType::I64:    return "I64";
+        case WireType::LEN:    return "LEN";
+        case WireType::I32:    return "I32";
+    }
+    return "?";
+}
+
+void Reader::expect(const Tag& t, WireType wire) const {
+    if (t.wire != wire)
+        fail("field " + std::to_string(t.field) + " has wire type " + wire_name(t.wire) +
+             ", expected " + wire_name(wire));
+}
+
 void Reader::fail(const std::string& msg) const {
     throw ParseError(msg, base_ + pos_);
 }
@@ -29,9 +47,13 @@ uint64_t Reader::read_varint() {
 
 Tag Reader::read_tag() {
     uint64_t key = read_varint();
-    uint32_t field = static_cast<uint32_t>(key >> 3);
+    uint32_t field = static_cast<uint32_t>(key >> 3);   // checked below
     uint8_t wire = static_cast<uint8_t>(key & 0x7);
 
+    // field numbers are 1 .. 2^29 - 1, larger keys must not be truncated
+    // into a valid-looking small field number
+    if ((key >> 3) > kMaxFieldNumber)
+        fail("field number " + std::to_string(key >> 3) + " exceeds 2^29 - 1");
     if (field == 0) fail("invalid field number 0");
     switch (wire) {
         case 0: case 1: case 2: case 5:

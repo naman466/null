@@ -66,6 +66,18 @@ public:
     std::string read_string() { return std::string(read_bytes()); }
     Reader read_message();   // sub-reader over the embedded message
 
+    // same reads for a field whose tag was just read, failing if the tag's
+    // wire type doesn't match, so a malformed field can't be misinterpreted
+    int64_t read_int64(const Tag& t)          { expect(t, WireType::VARINT); return read_int64(); }
+    int32_t read_int32(const Tag& t)          { expect(t, WireType::VARINT); return read_int32(); }
+    float read_float(const Tag& t)            { expect(t, WireType::I32);    return read_float(); }
+    std::string_view read_bytes(const Tag& t) { expect(t, WireType::LEN);    return read_bytes(); }
+    std::string read_string(const Tag& t)     { expect(t, WireType::LEN);    return read_string(); }
+    Reader read_message(const Tag& t)         { expect(t, WireType::LEN);    return read_message(); }
+
+    // fail unless the tag has the given wire type
+    void expect(const Tag& t, WireType wire) const;
+
     // skip the payload of a field we don't care about
     void skip(WireType wire);
 
