@@ -67,8 +67,9 @@ TEST(varint_truncated_throws) {
 }
 
 TEST(varint_too_long_throws) {
-    Bytes b(11, 0x80);
-    b.push_back(0x01);
+    // 11 continuation bytes, then a terminator
+    Bytes b(12, 0x80);
+    b.back() = 0x01;
     Reader r = reader(b);
     CHECK_THROWS(r.read_varint());
 }

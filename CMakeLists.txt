@@ -9,6 +9,14 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_compile_options(-Wall -Wextra -Wpedantic)
 
+# undefined behaviour traps and bounds-checked standard containers
+# trap mode needs no sanitizer runtime, so it also works with mingw
+option(NULL_SANITIZE "Build with UB sanitizer (trap mode) and libstdc++ assertions" OFF)
+if(NULL_SANITIZE)
+    add_compile_options(-fsanitize=undefined -fsanitize-trap=all -fno-omit-frame-pointer)
+    add_compile_definitions(_GLIBCXX_ASSERTIONS)
+endif()
+
 # core IR is header-only
 add_library(null_core INTERFACE)
 
@@ -38,4 +46,10 @@ foreach(suite IN LISTS TEST_SUITES)
     add_test(NAME ${suite} COMMAND test_${suite})
 endforeach()
 
-
+# mutation fuzzer, a short fixed-seed run is part of ctest
+# longer runs: fuzz_frontend <iterations> <rng_seed>
+add_executable(fuzz_frontend tests/fuzz_frontend.cpp)
+target_link_libraries(fuzz_frontend PRIVATE null_core null_frontend)
+target_include_directories(fuzz_frontend PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+add_test(NAME fuzz COMMAND fuzz_frontend 20000 1)
+set_tests_properties(fuzz PROPERTIES TIMEOUT 120)
