@@ -28,6 +28,7 @@
 #include "pb_writer.h"
 
 using namespace null;
+using null::onnx::Model;
 using null_test::PbWriter;
 using Bytes = std::string;
 
@@ -140,6 +141,20 @@ static void exercise(const Bytes& input) {
         check_value_info(onnx::parse_value_info(pb::Reader(input)), input);
     });
     run("walk_model", input, [&] { walk_model(input); });
+    run("parse_model", input, [&] {
+        // a model that loads must be fully consistent
+        Model m = onnx::parse_model(pb::Reader(input));
+        if (!m.graph.validate().empty()) finding("parse_model returned an invalid graph", input);
+        if (m.opset_version < onnx::kMinOpset || m.opset_version > onnx::kMaxOpset)
+            finding("parse_model accepted an unsupported opset", input);
+        for (auto& [_, t] : m.graph.initializers) check_tensor(t, input);
+        for (auto& name : m.graph.inputs) {
+            if (m.graph.is_initializer(name)) finding("initializer listed as graph input", input);
+            if (!m.graph.get_tensor_info(name)) finding("graph input without metadata", input);
+        }
+        for (auto& n : m.graph.nodes)
+            if (n.name.empty()) finding("node left without a name", input);
+    });
     g_current = nullptr;
 }
 
@@ -405,6 +420,7 @@ int main(int argc, char** argv) {
         ok([&] { onnx::parse_node(pb::Reader(s)); });
         ok([&] { onnx::parse_value_info(pb::Reader(s)); });
         ok([&] { walk_model(s); });
+        ok([&] { onnx::parse_model(pb::Reader(s)); });
         if (!accepted) {
             std::cout << "corpus seed rejected by every parser\n";
             return 1;

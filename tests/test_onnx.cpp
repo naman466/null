@@ -2,7 +2,9 @@
 #include "pb_writer.h"
 #include "frontend/onnx.h"
 
+#include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -854,4 +856,346 @@ TEST(value_info_errors) {
     PbWriter w;
     w.message_field(VI_TYPE, PbWriter{});
     CHECK_THROWS(parse_value_info(w.reader()));
+}
+
+// TESTS - GRAPH
+
+// GraphProto / ModelProto / OperatorSetIdProto field numbers
+enum : uint32_t {
+    G_NODE = 1, G_NAME = 2, G_INITIALIZER = 5, G_DOC = 10, G_INPUT = 11, G_OUTPUT = 12,
+    G_VALUE_INFO = 13, G_SPARSE = 15,
+    M_IR_VERSION = 1, M_PRODUCER = 2, M_PRODUCER_VERSION = 3, M_GRAPH = 7, M_OPSET = 8,
+    M_FUNCTIONS = 25,
+    OP_DOMAIN = 1, OP_VERSION = 2,
+};
+
+static PbWriter float_init(const std::string& name, const std::vector<int64_t>& dims,
+                           const std::vector<float>& values) {
+    PbWriter t = tensor_header(name, T_FLOAT, dims);
+    t.packed_floats(FLOAT_DATA, values);
+    return t;
+}
+
+// x[1,4] @ W[4,2] + B[2] -> y[1,2], with mm as an intermediate value
+static PbWriter linear_graph() {
+    PbWriter g;
+    g.bytes_field(G_NAME, "linear");
+    g.message_field(G_NODE, node_proto("/fc/MatMul", "MatMul", {"x", "W"}, {"mm"}));
+    g.message_field(G_NODE, node_proto("/fc/Add", "Add", {"mm", "B"}, {"y"}));
+    g.message_field(G_INITIALIZER, float_init("W", {4, 2}, {1, 0, 0, 1, 1, 0, 0, 1}));
+    g.message_field(G_INITIALIZER, float_init("B", {2}, {0.5f, -0.5f}));
+    g.message_field(G_INPUT, value_info("x", T_FLOAT, {dim_value(1), dim_value(4)}));
+    g.message_field(G_OUTPUT, value_info("y", T_FLOAT, {dim_value(1), dim_value(2)}));
+    g.message_field(G_VALUE_INFO, value_info("mm", T_FLOAT, {dim_value(1), dim_value(2)}));
+    return g;
+}
+
+static std::string graph_error(const PbWriter& g) {
+    try {
+        parse_graph(g.reader());
+    } catch (const OnnxError& e) {
+        return e.what();
+    }
+    throw std::runtime_error("expected OnnxError");
+}
+
+TEST(graph_linear) {
+    Graph g = parse_graph(linear_graph().reader());
+    CHECK_EQ(g.name, "linear");
+    CHECK_EQ(g.inputs, (std::vector<std::string>{"x"}));
+    CHECK_EQ(g.outputs, (std::vector<std::string>{"y"}));
+    CHECK_EQ(g.nodes.size(), 2u);
+    CHECK_EQ(g.nodes[0].op, OpType::MatMul);
+    CHECK_EQ(g.nodes[1].op, OpType::Add);
+    CHECK_EQ(g.initializers.size(), 2u);
+    CHECK_NEAR(g.initializers.at("B").float_ptr()[1], -0.5f, 1e-6f);
+
+    // inputs, outputs, intermediates and initializers all have metadata
+    for (const char* name : {"x", "y", "mm", "W", "B"})
+        CHECK(g.get_tensor_info(name) != nullptr);
+    CHECK_EQ(g.get_tensor_info("x")->shape, (std::vector<int64_t>{1, 4}));
+    CHECK(g.get_tensor_info("W")->is_constant);
+    CHECK(g.validate().empty());
+}
+
+TEST(graph_initializers_not_inputs) {
+    // models before IR v4 list every initializer as a graph input too
+    PbWriter g = linear_graph();
+    g.message_field(G_INPUT, value_info("W", T_FLOAT, {dim_value(4), dim_value(2)}));
+    g.message_field(G_INPUT, value_info("B", T_FLOAT, {dim_value(2)}));
+    Graph parsed = parse_graph(g.reader());
+    CHECK_EQ(parsed.inputs, (std::vector<std::string>{"x"}));
+    CHECK(parsed.get_tensor_info("W")->is_constant);   // not replaced by the input's info
+}
+
+TEST(graph_field_order_irrelevant) {
+    // outputs and nodes before initializers and inputs
+    PbWriter g;
+    g.message_field(G_OUTPUT, value_info("y", T_FLOAT, {dim_value(1), dim_value(2)}));
+    g.message_field(G_NODE, node_proto("add", "Add", {"mm", "B"}, {"y"}));
+    g.message_field(G_NODE, node_proto("mm", "MatMul", {"x", "W"}, {"mm"}));
+    g.bytes_field(G_DOC, "reordered");
+    g.message_field(G_INITIALIZER, float_init("B", {2}, {0, 0}));
+    g.message_field(G_INPUT, value_info("x", T_FLOAT, {dim_value(1), dim_value(4)}));
+    g.message_field(G_INITIALIZER, float_init("W", {4, 2}, {0, 0, 0, 0, 0, 0, 0, 0}));
+    g.bytes_field(G_NAME, "late_name");
+
+    Graph parsed = parse_graph(g.reader());
+    CHECK_EQ(parsed.name, "late_name");
+    auto order = parsed.topological_sort();
+    CHECK_EQ(order, (std::vector<size_t>{1, 0}));
+}
+
+TEST(graph_unnamed_nodes_get_unique_names) {
+    PbWriter g;
+    g.bytes_field(G_NAME, "names");
+    g.message_field(G_NODE, node_proto("", "Relu", {"x"}, {"a"}));
+    g.message_field(G_NODE, node_proto("Relu_0", "Neg", {"a"}, {"b"}));   // takes the generated name
+    g.message_field(G_NODE, node_proto("", "Relu", {"b"}, {"y"}));
+    g.message_field(G_INPUT, value_info("x", T_FLOAT, {dim_value(2)}));
+    g.message_field(G_OUTPUT, value_info("y", T_FLOAT, {dim_value(2)}));
+
+    Graph parsed = parse_graph(g.reader());
+    CHECK_EQ(parsed.nodes[0].name, "Relu_0_");
+    CHECK_EQ(parsed.nodes[1].name, "Relu_0");
+    CHECK_EQ(parsed.nodes[2].name, "Relu_2");
+}
+
+TEST(graph_unsupported_ops_listed_together) {
+    PbWriter g;
+    g.bytes_field(G_NAME, "rnn");
+    g.message_field(G_NODE, node_proto("s", "Shape", {"x"}, {"s"}));
+    g.message_field(G_NODE, node_proto("l1", "LSTM", {"x"}, {"h1"}));
+    g.message_field(G_NODE, node_proto("r", "Relu", {"x"}, {"r"}));
+    g.message_field(G_NODE, node_proto("l2", "LSTM", {"h1"}, {"h2"}));
+    PbWriter gelu = node_proto("g", "Gelu", {"h2"}, {"y"});
+    gelu.bytes_field(N_DOMAIN, "com.microsoft");
+    g.message_field(G_NODE, gelu);
+    g.message_field(G_INPUT, value_info("x", T_FLOAT, {dim_value(2)}));
+    g.message_field(G_OUTPUT, value_info("y", T_FLOAT, {dim_value(2)}));
+
+    std::string msg = graph_error(g);
+    CHECK(msg.find("graph 'rnn': unsupported operators: ") != std::string::npos);
+    CHECK(msg.find("LSTM (2 nodes)") != std::string::npos);
+    CHECK(msg.find("Shape (1 node)") != std::string::npos);
+    CHECK(msg.find("com.microsoft::Gelu (1 node)") != std::string::npos);
+}
+
+TEST(graph_value_info_filtering) {
+    PbWriter g = linear_graph();
+    // unknown rank and unknown type are left out
+    g.message_field(G_VALUE_INFO, value_info("u", T_FLOAT, {}, false));
+    g.message_field(G_VALUE_INFO, value_info("t", 0, {dim_value(3)}));
+    // value info never overrides what an input declared
+    g.message_field(G_VALUE_INFO, value_info("x", T_FLOAT, {dim_value(9)}));
+
+    Graph parsed = parse_graph(g.reader());
+    CHECK(parsed.get_tensor_info("u") == nullptr);
+    CHECK(parsed.get_tensor_info("t") == nullptr);
+    CHECK_EQ(parsed.get_tensor_info("x")->shape, (std::vector<int64_t>{1, 4}));
+}
+
+TEST(graph_symbolic_dims_kept) {
+    PbWriter g;
+    g.bytes_field(G_NAME, "dyn");
+    g.message_field(G_NODE, node_proto("r", "Relu", {"x"}, {"y"}));
+    g.message_field(G_INPUT, value_info("x", T_FLOAT, {dim_param("N"), dim_value(8)}));
+    g.message_field(G_OUTPUT, value_info("y", T_FLOAT, {dim_param("N"), dim_value(8)}));
+    Graph parsed = parse_graph(g.reader());
+    CHECK_EQ(parsed.get_tensor_info("x")->shape, (std::vector<int64_t>{-1, 8}));
+    CHECK_EQ(parsed.get_tensor_info("y")->shape, (std::vector<int64_t>{-1, 8}));
+}
+
+TEST(graph_input_requirements) {
+    PbWriter no_type = linear_graph();
+    PbWriter bare; bare.bytes_field(VI_NAME, "z");
+    no_type.message_field(G_INPUT, bare);
+    CHECK(graph_error(no_type).find("input 'z' has no element type") != std::string::npos);
+
+    PbWriter no_shape = linear_graph();
+    no_shape.message_field(G_INPUT, value_info("z", T_FLOAT, {}, false));
+    CHECK(graph_error(no_shape).find("input 'z' has no shape") != std::string::npos);
+
+    PbWriter dup = linear_graph();
+    dup.message_field(G_INPUT, value_info("x", T_FLOAT, {dim_value(1), dim_value(4)}));
+    CHECK(graph_error(dup).find("duplicate input 'x'") != std::string::npos);
+}
+
+TEST(graph_structure_errors) {
+    PbWriter dup_init = linear_graph();
+    dup_init.message_field(G_INITIALIZER, float_init("W", {1}, {0}));
+    CHECK(graph_error(dup_init).find("duplicate initializer 'W'") != std::string::npos);
+
+    PbWriter unnamed_init = linear_graph();
+    unnamed_init.message_field(G_INITIALIZER, float_init("", {1}, {0}));
+    CHECK(graph_error(unnamed_init).find("initializer without a name") != std::string::npos);
+
+    PbWriter dup_out = linear_graph();
+    dup_out.message_field(G_OUTPUT, value_info("y", T_FLOAT, {dim_value(1), dim_value(2)}));
+    CHECK(graph_error(dup_out).find("duplicate output 'y'") != std::string::npos);
+
+    PbWriter no_out;
+    no_out.message_field(G_INPUT, value_info("x", T_FLOAT, {dim_value(1)}));
+    CHECK(graph_error(no_out).find("graph has no outputs") != std::string::npos);
+
+    PbWriter sparse = linear_graph();
+    sparse.message_field(G_SPARSE, PbWriter{});
+    CHECK(graph_error(sparse).find("sparse initializers") != std::string::npos);
+}
+
+TEST(graph_validation_errors_reported) {
+    PbWriter undefined = linear_graph();
+    undefined.message_field(G_NODE, node_proto("bad", "Relu", {"ghost"}, {"z"}));
+    std::string msg = graph_error(undefined);
+    CHECK(msg.find("invalid graph") != std::string::npos);
+    CHECK(msg.find("ghost") != std::string::npos);
+
+    PbWriter dup_producer = linear_graph();
+    dup_producer.message_field(G_NODE, node_proto("again", "Relu", {"x"}, {"y"}));
+    CHECK(graph_error(dup_producer).find("produced by both") != std::string::npos);
+
+    PbWriter missing_out = linear_graph();
+    missing_out.message_field(G_OUTPUT, value_info("nowhere", T_FLOAT, {dim_value(1)}));
+    CHECK(graph_error(missing_out).find("'nowhere' is not defined") != std::string::npos);
+}
+
+TEST(graph_errors_name_the_graph) {
+    PbWriter g = linear_graph();
+    g.message_field(G_INITIALIZER, tensor_header("half", T_FLOAT16, {1}));
+    std::string msg = graph_error(g);
+    CHECK(msg.find("graph 'linear': tensor 'half'") != std::string::npos);
+    CHECK_EQ(msg.find("onnx:", 1), std::string::npos);
+}
+
+// TESTS - MODEL
+
+static PbWriter opset(const std::string& domain, int64_t version) {
+    PbWriter o;
+    if (!domain.empty()) o.bytes_field(OP_DOMAIN, domain);
+    o.int_field(OP_VERSION, version);
+    return o;
+}
+
+static PbWriter model_proto(int64_t opset_version, const PbWriter& graph) {
+    PbWriter m;
+    m.int_field(M_IR_VERSION, 9);
+    m.bytes_field(M_PRODUCER, "pytorch").bytes_field(M_PRODUCER_VERSION, "2.4.0");
+    m.message_field(M_OPSET, opset("", opset_version));
+    m.message_field(M_GRAPH, graph);
+    return m;
+}
+
+static std::string model_error(const PbWriter& m) {
+    try {
+        parse_model(m.reader());
+    } catch (const OnnxError& e) {
+        return e.what();
+    }
+    throw std::runtime_error("expected OnnxError");
+}
+
+TEST(model_basic) {
+    Model m = parse_model(model_proto(17, linear_graph()).reader());
+    CHECK_EQ(m.ir_version, 9);
+    CHECK_EQ(m.opset_version, 17);
+    CHECK_EQ(m.producer_name, "pytorch");
+    CHECK_EQ(m.producer_version, "2.4.0");
+    CHECK_EQ(m.graph.name, "linear");
+    CHECK_EQ(m.graph.nodes.size(), 2u);
+}
+
+TEST(model_opset_imports) {
+    // "ai.onnx" is the default domain spelled out, other domains are ignored
+    PbWriter m;
+    m.int_field(M_IR_VERSION, 8);
+    m.message_field(M_OPSET, opset("ai.onnx.ml", 3));
+    m.message_field(M_OPSET, opset("ai.onnx", 13));
+    m.message_field(M_OPSET, opset("com.microsoft", 1));
+    m.message_field(M_FUNCTIONS, PbWriter{});
+    m.message_field(M_GRAPH, linear_graph());
+    CHECK_EQ(parse_model(m.reader()).opset_version, 13);
+
+    CHECK_EQ(parse_model(model_proto(kMinOpset, linear_graph()).reader()).opset_version, kMinOpset);
+    CHECK_EQ(parse_model(model_proto(kMaxOpset, linear_graph()).reader()).opset_version, kMaxOpset);
+}
+
+TEST(model_opset_errors) {
+    CHECK(model_error(model_proto(12, linear_graph())).find("opset 12 is not supported") != std::string::npos);
+    CHECK(model_error(model_proto(kMaxOpset + 1, linear_graph())).find("is not supported") != std::string::npos);
+
+    PbWriter none;
+    none.message_field(M_OPSET, opset("ai.onnx.ml", 3)).message_field(M_GRAPH, linear_graph());
+    CHECK(model_error(none).find("does not import the default onnx operator set") != std::string::npos);
+
+    PbWriter twice = model_proto(17, linear_graph());
+    twice.message_field(M_OPSET, opset("", 18));
+    CHECK(model_error(twice).find("twice") != std::string::npos);
+
+    PbWriter no_graph;
+    no_graph.message_field(M_OPSET, opset("", 17));
+    CHECK(model_error(no_graph).find("model has no graph") != std::string::npos);
+}
+
+TEST(model_opset_checked_before_graph) {
+    // an old model fails on its opset, not on whatever its graph contains
+    PbWriter g;
+    g.message_field(G_NODE, node_proto("l", "LSTM", {"x"}, {"y"}));
+    std::string msg = model_error(model_proto(9, g));
+    CHECK(msg.find("opset 9") != std::string::npos);
+    CHECK_EQ(msg.find("LSTM"), std::string::npos);
+}
+
+// TESTS - LOAD MODEL
+
+static std::string write_temp(const std::string& name, const std::vector<uint8_t>& bytes) {
+    std::string path = "null_test_" + name;
+    std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()),
+                                                 static_cast<std::streamsize>(bytes.size()));
+    return path;
+}
+
+TEST(load_model_from_file) {
+    std::string path = write_temp("linear.onnx", model_proto(17, linear_graph()).buf);
+    Model m = load_model(path);
+    std::remove(path.c_str());
+    CHECK_EQ(m.opset_version, 17);
+    CHECK_EQ(m.graph.outputs, (std::vector<std::string>{"y"}));
+}
+
+TEST(load_model_errors_are_onnx_errors) {
+    // missing file
+    try {
+        load_model("does/not/exist.onnx");
+        throw std::runtime_error("expected OnnxError");
+    } catch (const OnnxError& e) {
+        CHECK(std::string(e.what()).find("cannot open 'does/not/exist.onnx'") != std::string::npos);
+    }
+
+    // malformed protobuf comes back as OnnxError naming the file
+    std::string garbage = write_temp("garbage.onnx", {0x0A, 0xFF, 0x01});
+    try {
+        load_model(garbage);
+        throw std::runtime_error("expected OnnxError");
+    } catch (const OnnxError& e) {
+        std::string msg = e.what();
+        CHECK(msg.find(garbage) != std::string::npos);
+        CHECK(msg.find("malformed protobuf") != std::string::npos);
+    }
+    std::remove(garbage.c_str());
+
+    // semantic errors also name the file
+    std::string old = write_temp("old.onnx", model_proto(11, linear_graph()).buf);
+    try {
+        load_model(old);
+        throw std::runtime_error("expected OnnxError");
+    } catch (const OnnxError& e) {
+        std::string msg = e.what();
+        CHECK(msg.find(old + ": opset 11") != std::string::npos);
+    }
+    std::remove(old.c_str());
+
+    // an empty file is a model with no opset
+    std::string empty = write_temp("empty.onnx", {});
+    CHECK_THROWS(load_model(empty));
+    std::remove(empty.c_str());
 }

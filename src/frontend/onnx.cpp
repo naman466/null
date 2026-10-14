@@ -2,6 +2,10 @@
 
 #include <bit>
 #include <cstring>
+#include <fstream>
+#include <iterator>
+#include <map>
+#include <set>
 #include <optional>
 #include <stdexcept>
 #include <string_view>
@@ -107,6 +111,31 @@ enum ShapeField : uint32_t {
 enum DimField : uint32_t {
     kDimValue = 1,
     kDimParam = 2,
+};
+
+// GraphProto field numbers
+enum GraphField : uint32_t {
+    kGraphNode              = 1,
+    kGraphName              = 2,
+    kGraphInitializer       = 5,
+    kGraphInput             = 11,
+    kGraphOutput            = 12,
+    kGraphValueInfo         = 13,
+    kGraphSparseInitializer = 15,
+};
+
+// ModelProto / OperatorSetIdProto field numbers
+enum ModelField : uint32_t {
+    kModelIrVersion       = 1,
+    kModelProducerName    = 2,
+    kModelProducerVersion = 3,
+    kModelGraph           = 7,
+    kModelOpsetImport     = 8,
+};
+
+enum OpsetField : uint32_t {
+    kOpsetDomain  = 1,
+    kOpsetVersion = 2,
 };
 
 const char* attr_type_name(int32_t type) {
@@ -471,10 +500,12 @@ Node parse_node(pb::Reader r) {
 
     if (op_type.empty()) throw fail("missing op_type");
     if (!domain.empty() && domain != "ai.onnx")
-        throw fail("unsupported operator domain '" + domain + "'");
+        throw UnsupportedOpError(fail("unsupported operator domain '" + domain + "'").detail(),
+                                 domain + "::" + op_type);
 
     n.op = str_to_optype(op_type);
-    if (n.op == OpType::Unknown) throw fail("unsupported operator '" + op_type + "'");
+    if (n.op == OpType::Unknown)
+        throw UnsupportedOpError(fail("unsupported operator '" + op_type + "'").detail(), op_type);
 
     for (const pb::Reader& ar : attrs) {
         Attribute a;
@@ -488,6 +519,183 @@ Node parse_node(pb::Reader r) {
     }
 
     return n;
+}
+
+Graph parse_graph(pb::Reader r) {
+    Graph g;
+    std::vector<pb::Reader> node_msgs, init_msgs, input_msgs, output_msgs, vi_msgs;
+    bool sparse = false;
+
+    // collect first, so every error below can name the graph
+    while (!r.eof()) {
+        pb::Tag tag = r.read_tag();
+        switch (tag.field) {
+            case kGraphNode:              node_msgs.push_back(r.read_message(tag)); break;
+            case kGraphName:              g.name = r.read_string(tag); break;
+            case kGraphInitializer:       init_msgs.push_back(r.read_message(tag)); break;
+            case kGraphInput:             input_msgs.push_back(r.read_message(tag)); break;
+            case kGraphOutput:            output_msgs.push_back(r.read_message(tag)); break;
+            case kGraphValueInfo:         vi_msgs.push_back(r.read_message(tag)); break;
+            case kGraphSparseInitializer: sparse = true; r.skip(tag.wire); break;
+            default:                      r.skip(tag.wire); break;
+        }
+    }
+
+    auto fail = [&](const std::string& msg) -> OnnxError {
+        return OnnxError("graph '" + g.name + "': " + msg);
+    };
+    // re-throw errors from the message parsers with the graph as context,
+    // unsupported operators pass through so they can be collected
+    auto parse = [&](auto fn, const pb::Reader& msg) {
+        try {
+            return fn(msg);
+        } catch (const UnsupportedOpError&) {
+            throw;
+        } catch (const OnnxError& e) {
+            throw fail(e.detail());
+        }
+    };
+
+    if (sparse) throw fail("sparse initializers are not supported");
+
+    // weights and constants
+    for (const pb::Reader& m : init_msgs) {
+        Tensor t = parse(parse_tensor, m);
+        if (t.name.empty()) throw fail("initializer without a name");
+        if (g.is_initializer(t.name)) throw fail("duplicate initializer '" + t.name + "'");
+        g.add_initializer(std::move(t));
+    }
+
+    // graph inputs, minus initializers that old models also list as inputs
+    for (const pb::Reader& m : input_msgs) {
+        ValueInfo vi = parse(parse_value_info, m);
+        if (g.is_graph_input(vi.name)) throw fail("duplicate input '" + vi.name + "'");
+        if (g.is_initializer(vi.name)) continue;
+        if (vi.dtype == DType::UNDEFINED) throw fail("input '" + vi.name + "' has no element type");
+        if (!vi.has_shape) throw fail("input '" + vi.name + "' has no shape");
+        g.inputs.push_back(vi.name);
+        g.add_value_info(vi.to_tensor());
+    }
+
+    // nodes, collecting every unsupported operator before failing
+    std::map<std::string, int> unsupported;
+    std::vector<Node> nodes;
+    for (const pb::Reader& m : node_msgs) {
+        try {
+            nodes.push_back(parse(parse_node, m));
+        } catch (const UnsupportedOpError& e) {
+            unsupported[e.op_type]++;
+        }
+    }
+    if (!unsupported.empty()) {
+        std::string list;
+        for (auto& [op, count] : unsupported) {
+            if (!list.empty()) list += ", ";
+            list += op + " (" + std::to_string(count) + (count == 1 ? " node)" : " nodes)");
+        }
+        throw fail("unsupported operators: " + list);
+    }
+
+    // give unnamed nodes a unique name for diagnostics and codegen
+    std::set<std::string> used;
+    for (const Node& n : nodes)
+        if (!n.name.empty()) used.insert(n.name);
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        if (!nodes[i].name.empty()) continue;
+        std::string name = optype_to_str(nodes[i].op) + "_" + std::to_string(i);
+        while (used.count(name)) name += "_";
+        used.insert(name);
+        nodes[i].name = name;
+    }
+    for (Node& n : nodes) g.add_node(std::move(n));
+
+    // outputs and intermediate values, keeping only fully known metadata
+    // and never overriding what inputs or initializers already declared
+    auto record = [&](const ValueInfo& vi) {
+        if (vi.dtype != DType::UNDEFINED && vi.has_shape && !g.get_tensor_info(vi.name))
+            g.add_value_info(vi.to_tensor());
+    };
+    std::set<std::string> output_names;
+    for (const pb::Reader& m : output_msgs) {
+        ValueInfo vi = parse(parse_value_info, m);
+        if (!output_names.insert(vi.name).second) throw fail("duplicate output '" + vi.name + "'");
+        g.outputs.push_back(vi.name);
+        record(vi);
+    }
+    for (const pb::Reader& m : vi_msgs) record(parse(parse_value_info, m));
+
+    if (g.outputs.empty()) throw fail("graph has no outputs");
+
+    std::vector<std::string> errors = g.validate();
+    if (!errors.empty()) {
+        std::string msg;
+        for (auto& e : errors) msg += (msg.empty() ? "" : "; ") + e;
+        throw fail("invalid graph: " + msg);
+    }
+    return g;
+}
+
+Model parse_model(pb::Reader r) {
+    Model model;
+    std::optional<pb::Reader> graph;
+    bool has_opset = false;
+
+    while (!r.eof()) {
+        pb::Tag tag = r.read_tag();
+        switch (tag.field) {
+            case kModelIrVersion:       model.ir_version = r.read_int64(tag); break;
+            case kModelProducerName:    model.producer_name = r.read_string(tag); break;
+            case kModelProducerVersion: model.producer_version = r.read_string(tag); break;
+            case kModelGraph:           graph = r.read_message(tag); break;
+            case kModelOpsetImport: {
+                pb::Reader opset = r.read_message(tag);
+                std::string domain;
+                int64_t version = 0;
+                while (!opset.eof()) {
+                    pb::Tag ot = opset.read_tag();
+                    switch (ot.field) {
+                        case kOpsetDomain:  domain = opset.read_string(ot); break;
+                        case kOpsetVersion: version = opset.read_int64(ot); break;
+                        default:            opset.skip(ot.wire); break;
+                    }
+                }
+                // other domains (ai.onnx.ml, custom) only matter if a node
+                // uses them, and parse_node rejects those
+                if (domain.empty() || domain == "ai.onnx") {
+                    if (has_opset) throw OnnxError("model imports the default operator set twice");
+                    has_opset = true;
+                    model.opset_version = version;
+                }
+                break;
+            }
+            default: r.skip(tag.wire); break;
+        }
+    }
+
+    if (!has_opset) throw OnnxError("model does not import the default onnx operator set");
+    if (model.opset_version < kMinOpset || model.opset_version > kMaxOpset)
+        throw OnnxError("opset " + std::to_string(model.opset_version) + " is not supported, "
+                        "supported opsets are " + std::to_string(kMinOpset) + " to " +
+                        std::to_string(kMaxOpset) + " (re-export the model with a supported opset)");
+    if (!graph) throw OnnxError("model has no graph");
+
+    model.graph = parse_graph(*graph);
+    return model;
+}
+
+Model load_model(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) throw OnnxError("cannot open '" + path + "'");
+    std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    if (file.bad()) throw OnnxError("cannot read '" + path + "'");
+
+    try {
+        return parse_model(pb::Reader(bytes));
+    } catch (const pb::ParseError& e) {
+        throw OnnxError(path + ": malformed protobuf (" + std::string(e.what()) + ")");
+    } catch (const OnnxError& e) {
+        throw OnnxError(path + ": " + e.detail());
+    }
 }
 
 } // namespace null::onnx
