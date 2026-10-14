@@ -1,0 +1,2 @@
+# binary test fixtures, never convert line endings
+*.onnx binary

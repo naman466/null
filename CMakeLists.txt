@@ -37,12 +37,14 @@ target_link_libraries(null_cli PRIVATE null_core)
 enable_testing()
 
 # one executable per suite, built from tests/test_<suite>.cpp
-set(TEST_SUITES tensor node graph protobuf onnx adversarial)
+set(TEST_SUITES tensor node graph protobuf onnx adversarial fixtures)
 
 foreach(suite IN LISTS TEST_SUITES)
     add_executable(test_${suite} tests/test_main.cpp tests/test_${suite}.cpp)
     target_link_libraries(test_${suite} PRIVATE null_core null_frontend)
-    target_compile_definitions(test_${suite} PRIVATE NULL_TEST_SUITE="${suite}")
+    target_compile_definitions(test_${suite} PRIVATE
+        NULL_TEST_SUITE="${suite}"
+        NULL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     add_test(NAME ${suite} COMMAND test_${suite})
 endforeach()
 
