@@ -334,3 +334,24 @@ TEST(graph_topo_sort_long_reversed_chain) {
     CHECK_EQ(order.size(), N);
     for (size_t k = 0; k < N; ++k) CHECK_EQ(order[k], N - 1 - k);
 }
+
+TEST(graph_optional_names_are_not_dependencies) {
+    // "" marks an omitted optional input or output. topological_sort used to
+    // treat it as a tensor name, so a node with both an optional input and an
+    // optional output depended on itself and was reported as a cycle
+    Graph self("self");
+    self.inputs = {"x"};
+    self.outputs = {"y"};
+    self.add_node(Node("clip", OpType::Clip, {"x", "", "max"}, {"y", ""}));
+    CHECK_EQ(self.topological_sort(), (std::vector<size_t>{0}));
+
+    // and across nodes it built a false cycle: a "reads" the "" that b
+    // "writes", while b really reads a's output
+    Graph cross("cross");
+    cross.inputs = {"x"};
+    cross.outputs = {"y"};
+    cross.add_node(Node("a", OpType::Clip,    {"x", ""}, {"h"}));
+    cross.add_node(Node("b", OpType::Dropout, {"h"},     {"y", ""}));
+    CHECK_EQ(cross.topological_sort(), (std::vector<size_t>{0, 1}));
+    CHECK(cross.validate().empty());
+}

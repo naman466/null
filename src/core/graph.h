@@ -81,10 +81,12 @@ public:
     std::vector<size_t> topological_sort() const {
         size_t N = nodes.size();
         // map from output tensor name -> node index
+        // "" marks an omitted optional input or output, it is not a tensor
+        // and must not create a dependency
         std::unordered_map<std::string, size_t> producer;
         for (size_t i = 0; i < N; ++i) {
             for (auto& out : nodes[i].outputs) {
-                producer[out] = i;
+                if (!out.empty()) producer[out] = i;
             }
         }
 
