@@ -31,13 +31,13 @@ target_link_libraries(null_frontend PUBLIC null_core)
 
 add_executable(null_cli src/main.cpp)
 
-target_link_libraries(null_cli PRIVATE null_core)
+target_link_libraries(null_cli PRIVATE null_core null_frontend)
 
 # tests
 enable_testing()
 
 # one executable per suite, built from tests/test_<suite>.cpp
-set(TEST_SUITES tensor node graph protobuf onnx adversarial fixtures)
+set(TEST_SUITES tensor node graph protobuf onnx adversarial fixtures dump)
 
 foreach(suite IN LISTS TEST_SUITES)
     add_executable(test_${suite} tests/test_main.cpp tests/test_${suite}.cpp)
@@ -55,3 +55,25 @@ target_link_libraries(fuzz_frontend PRIVATE null_core null_frontend)
 target_include_directories(fuzz_frontend PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 add_test(NAME fuzz COMMAND fuzz_frontend 20000 1)
 set_tests_properties(fuzz PROPERTIES TIMEOUT 120)
+
+# cli end to end: run null_cli on the fixtures, check exit code and output
+set(FIXTURES "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+function(add_cli_test name expect_exit expect_output)
+    add_test(NAME cli_${name}
+        COMMAND ${CMAKE_COMMAND}
+            "-DEXE=$<TARGET_FILE:null_cli>"
+            "-DARGS=${ARGN}"
+            "-DEXPECT_EXIT=${expect_exit}"
+            "-DEXPECT_OUTPUT=${expect_output}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_cli.cmake")
+endfunction()
+
+add_cli_test(dump           0 "4  /softmax: Softmax.logits. -> probs: float32.[?], 3." "${FIXTURES}/mlp.onnx" --dump)
+add_cli_test(summary        0 "graph 'linear': 2 nodes, 2 initializers, 1 input, 1 output, ok" "${FIXTURES}/linear.onnx")
+add_cli_test(unsupported    2 "unsupported operators: LSTM .2 nodes., Shape .1 node." "${FIXTURES}/unsupported_ops.onnx")
+add_cli_test(old_opset      2 "opset 11 is not supported" "${FIXTURES}/opset11.onnx")
+add_cli_test(missing_file   2 "cannot open 'does-not-exist.onnx'" does-not-exist.onnx)
+add_cli_test(no_args        1 "Usage: nullc")
+add_cli_test(unknown_option 1 "unknown option '--bogus'" --bogus)
+add_cli_test(two_models     1 "only one model can be given" a.onnx b.onnx)
+add_cli_test(help           0 "Usage: nullc" --help)

@@ -124,8 +124,24 @@ mkdir build && cd build
 cmake ..
 make
 
-./null_cli
-# Usage: nullc [model_path]
+./null_cli model.onnx          # load and check a model
+./null_cli model.onnx --dump   # print its inputs, outputs, weights and nodes
+```
+
+### Running the Tests
+
+```bash
+ctest --output-on-failure
+```
+
+The suite includes real `.onnx` fixtures in `tests/fixtures/` (regenerate them with
+`python tests/fixtures/make_fixtures.py`, which needs `pip install onnx numpy`), a
+mutation fuzzer, and end-to-end tests of the command-line tool.
+
+For a build that traps on undefined behaviour and bounds-checks standard containers:
+
+```bash
+cmake .. -DNULL_SANITIZE=ON && make && ctest
 ```
 
 ---
@@ -139,7 +155,7 @@ This project is under active development and experimentation.
 * [x] Project setup and build system
 * [x] Core graph IR
 * [x] Topological sorting
-* [ ] ONNX frontend
+* [x] ONNX frontend
 * [ ] Basic C code generation
 * [ ] End-to-end execution on a simple model
 * [ ] Optimization passes
