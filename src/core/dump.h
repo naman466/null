@@ -13,21 +13,6 @@ namespace null {
 
 // human readable text form of a graph, for the cli and for debugging passes
 
-inline std::string dtype_name(DType dt) {
-    switch (dt) {
-        case DType::FLOAT32: return "float32";
-        case DType::FLOAT64: return "float64";
-        case DType::INT8:    return "int8";
-        case DType::UINT8:   return "uint8";
-        case DType::INT16:   return "int16";
-        case DType::UINT16:  return "uint16";
-        case DType::INT32:   return "int32";
-        case DType::INT64:   return "int64";
-        case DType::BOOL:    return "bool";
-        default:             return "undefined";
-    }
-}
-
 // [1, ?, 28], dynamic dims print as ?
 inline std::string dims_str(const std::vector<int64_t>& shape) {
     std::string s = "[";

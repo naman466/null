@@ -39,6 +39,22 @@ inline std::string dtype_to_str(DType dt) {
     }
 }
 
+// short name for messages and dumps, e.g. "float32"
+inline std::string dtype_name(DType dt) {
+    switch (dt) {
+        case DType::FLOAT32: return "float32";
+        case DType::FLOAT64: return "float64";
+        case DType::INT8:    return "int8";
+        case DType::UINT8:   return "uint8";
+        case DType::INT16:   return "int16";
+        case DType::UINT16:  return "uint16";
+        case DType::INT32:   return "int32";
+        case DType::INT64:   return "int64";
+        case DType::BOOL:    return "bool";
+        default:             return "undefined";
+    }
+}
+
 inline size_t dtype_size(DType dt) {
     switch (dt) {
         case DType::FLOAT32: return 4;

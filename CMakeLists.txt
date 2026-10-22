@@ -29,6 +29,12 @@ add_library(null_frontend STATIC
 )
 target_link_libraries(null_frontend PUBLIC null_core)
 
+# analyses over the IR
+add_library(null_analysis STATIC
+    src/analysis/shape_inference.cpp
+)
+target_link_libraries(null_analysis PUBLIC null_core)
+
 add_executable(null_cli src/main.cpp)
 
 target_link_libraries(null_cli PRIVATE null_core null_frontend)
@@ -37,11 +43,11 @@ target_link_libraries(null_cli PRIVATE null_core null_frontend)
 enable_testing()
 
 # one executable per suite, built from tests/test_<suite>.cpp
-set(TEST_SUITES tensor node graph protobuf onnx adversarial fixtures dump)
+set(TEST_SUITES tensor node graph protobuf onnx adversarial fixtures dump shape)
 
 foreach(suite IN LISTS TEST_SUITES)
     add_executable(test_${suite} tests/test_main.cpp tests/test_${suite}.cpp)
-    target_link_libraries(test_${suite} PRIVATE null_core null_frontend)
+    target_link_libraries(test_${suite} PRIVATE null_core null_frontend null_analysis)
     target_compile_definitions(test_${suite} PRIVATE
         NULL_TEST_SUITE="${suite}"
         NULL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
