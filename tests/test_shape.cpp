@@ -292,3 +292,141 @@ TEST(shape_dead_nodes_skipped) {
     infer_shapes(g);
     CHECK(g.get_tensor_info("junk") == nullptr);
 }
+
+// TESTS - MATMUL
+
+static Shape matmul_shape(const Shape& a, const Shape& b, DType dt = DType::FLOAT32) {
+    Graph g = one_node(OpType::MatMul, {a, b}, dt);
+    infer_shapes(g);
+    return info(g, "out0").shape;
+}
+
+TEST(shape_matmul_2d) {
+    CHECK_EQ(matmul_shape({2, 3}, {3, 4}), (Shape{2, 4}));
+    CHECK_EQ(matmul_shape({1, 784}, {784, 128}), (Shape{1, 128}));
+    CHECK_EQ(matmul_shape({-1, 784}, {784, 10}), (Shape{-1, 10}));
+}
+
+TEST(shape_matmul_vectors) {
+    // 1-D operands get a dim added and then removed again
+    CHECK_EQ(matmul_shape({3}, {3, 4}), (Shape{4}));
+    CHECK_EQ(matmul_shape({2, 3}, {3}), (Shape{2}));
+    CHECK_EQ(matmul_shape({3}, {3}), (Shape{}));
+    CHECK_EQ(matmul_shape({5, 2, 3}, {3}), (Shape{5, 2}));
+    CHECK_EQ(matmul_shape({3}, {5, 3, 4}), (Shape{5, 4}));
+}
+
+TEST(shape_matmul_batched) {
+    CHECK_EQ(matmul_shape({8, 2, 3}, {8, 3, 4}), (Shape{8, 2, 4}));
+    CHECK_EQ(matmul_shape({8, 2, 3}, {3, 4}), (Shape{8, 2, 4}));          // shared weights
+    CHECK_EQ(matmul_shape({2, 1, 5, 3}, {7, 3, 4}), (Shape{2, 7, 5, 4}));  // batch broadcast
+    CHECK_EQ(matmul_shape({-1, 12, 64, 64}, {-1, 12, 64, 32}), (Shape{-1, 12, 64, 32}));
+}
+
+TEST(shape_matmul_types) {
+    Graph g = one_node(OpType::MatMul, {{2, 3}, {3, 1}}, DType::INT64);
+    infer_shapes(g);
+    CHECK_EQ(info(g, "out0").dtype, DType::INT64);
+
+    Graph u8 = one_node(OpType::MatMul, {{2, 3}, {3, 1}}, DType::UINT8);
+    CHECK(contains(shape_error(u8), "must be float32, float64, int32 or int64, got uint8"));
+}
+
+TEST(shape_matmul_errors) {
+    Graph inner = one_node(OpType::MatMul, {{2, 3}, {4, 5}});
+    CHECK(contains(shape_error(inner), "inner dimensions differ: [2, 3] x [4, 5] (3 vs 4)"));
+
+    Graph batch = one_node(OpType::MatMul, {{2, 2, 3}, {5, 3, 4}});
+    CHECK(contains(shape_error(batch), "batch dimensions: cannot broadcast"));
+
+    Graph scalar = one_node(OpType::MatMul, {{}, {3}});
+    CHECK(contains(shape_error(scalar), "must be at least 1-D"));
+
+    // a dynamic inner dim is accepted
+    CHECK_EQ(matmul_shape({2, -1}, {5, 4}), (Shape{2, 4}));
+}
+
+// TESTS - GEMM
+
+static Graph gemm_graph(const Shape& a, const Shape& b, const Shape* c,
+                        int64_t trans_a = 0, int64_t trans_b = 0) {
+    std::vector<Shape> shapes = {a, b};
+    if (c) shapes.push_back(*c);
+    Graph g = one_node(OpType::Gemm, shapes);
+    if (trans_a) g.nodes[0].add_attr("transA", trans_a);
+    if (trans_b) g.nodes[0].add_attr("transB", trans_b);
+    g.nodes[0].add_attr("alpha", 0.5f);   // scaling never changes the shape
+    return g;
+}
+
+static Shape gemm_shape(const Shape& a, const Shape& b, const Shape* c,
+                        int64_t trans_a = 0, int64_t trans_b = 0) {
+    Graph g = gemm_graph(a, b, c, trans_a, trans_b);
+    infer_shapes(g);
+    return info(g, "out0").shape;
+}
+
+TEST(shape_gemm_transposes) {
+    CHECK_EQ(gemm_shape({2, 3}, {3, 4}, nullptr), (Shape{2, 4}));
+    CHECK_EQ(gemm_shape({3, 2}, {3, 4}, nullptr, 1, 0), (Shape{2, 4}));
+    CHECK_EQ(gemm_shape({2, 3}, {4, 3}, nullptr, 0, 1), (Shape{2, 4}));   // pytorch Linear
+    CHECK_EQ(gemm_shape({3, 2}, {4, 3}, nullptr, 1, 1), (Shape{2, 4}));
+    CHECK_EQ(gemm_shape({-1, 784}, {128, 784}, nullptr, 0, 1), (Shape{-1, 128}));
+}
+
+TEST(shape_gemm_bias_shapes) {
+    for (const Shape& c : {Shape{}, Shape{4}, Shape{1, 4}, Shape{2, 1}, Shape{2, 4}, Shape{1}}) {
+        CHECK_EQ(gemm_shape({2, 3}, {4, 3}, &c, 0, 1), (Shape{2, 4}));
+    }
+    // a bias against a dynamic batch
+    Shape bias = {128};
+    CHECK_EQ(gemm_shape({-1, 784}, {128, 784}, &bias, 0, 1), (Shape{-1, 128}));
+}
+
+TEST(shape_gemm_errors) {
+    Graph inner = gemm_graph({2, 3}, {3, 4}, nullptr, 0, 1);   // transB makes B [4, 3]
+    CHECK(contains(shape_error(inner), "inner dimensions differ: A [2, 3], B [3, 4] (transposed) (3 vs 4)"));
+
+    Shape wide = {5};
+    Graph bias = gemm_graph({2, 3}, {3, 4}, &wide);
+    CHECK(contains(shape_error(bias), "C with shape [5] cannot broadcast to the result [2, 4]"));
+
+    // C may not grow the result
+    Shape grows = {3, 2, 4};
+    Graph rank = gemm_graph({2, 3}, {3, 4}, &grows);
+    CHECK(contains(shape_error(rank), "cannot broadcast to the result"));
+
+    Graph not2d = one_node(OpType::Gemm, {{2, 3, 4}, {4, 5}});
+    CHECK(contains(shape_error(not2d), "A must be 2-D, got [2, 3, 4]"));
+}
+
+TEST(shape_mlp_end_to_end) {
+    // Gemm -> Relu -> Gemm, as an exported Linear-ReLU-Linear
+    Graph g("mlp");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {-1, 16}, DType::FLOAT32));
+    auto weights = [&](const std::string& name, Shape shape) {
+        Tensor t(name, shape, DType::FLOAT32);
+        int64_t n = 1;
+        for (int64_t d : shape) n *= d;
+        t.set_float_data(std::vector<float>(static_cast<size_t>(n), 0.0f));
+        t.shape = shape;
+        g.add_initializer(t);
+    };
+    weights("w1", {8, 16});
+    weights("b1", {8});
+    weights("w2", {3, 8});
+    weights("b2", {3});
+    Node fc1("fc1", OpType::Gemm, {"x", "w1", "b1"}, {"h"});
+    fc1.add_attr("transB", int64_t{1});
+    Node fc2("fc2", OpType::Gemm, {"r", "w2", "b2"}, {"y"});
+    fc2.add_attr("transB", int64_t{1});
+    g.add_node(fc1);
+    g.add_node(Node("relu", OpType::Relu, {"h"}, {"r"}));
+    g.add_node(fc2);
+    infer_shapes(g);
+    CHECK_EQ(info(g, "h").shape, (Shape{-1, 8}));
+    CHECK_EQ(info(g, "r").shape, (Shape{-1, 8}));
+    CHECK_EQ(info(g, "y").shape, (Shape{-1, 3}));
+}

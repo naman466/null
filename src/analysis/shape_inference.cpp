@@ -182,6 +182,97 @@ std::vector<TypeInfo> constant(const Context& c) {
     c.fail("no supported value attribute (value, value_float(s), value_int(s))");
 }
 
+// RULES - LINEAR ALGEBRA
+
+std::string shape_of(const std::vector<int64_t>& s) {
+    return Tensor("", s, DType::UNDEFINED).shape_str();
+}
+
+// element types onnx allows for MatMul and Gemm (that null supports)
+void require_matmul_type(const Context& c, size_t i) {
+    DType dt = c.in(i).dtype;
+    if (dt != DType::FLOAT32 && dt != DType::FLOAT64 && dt != DType::INT32 && dt != DType::INT64)
+        c.fail("input " + std::to_string(i) + " must be float32, float64, int32 or int64, got " +
+               dtype_name(dt));
+}
+
+// MatMul(A, B), numpy matmul semantics
+//   [.., M, K] x [.., K, N] -> [broadcast(..), M, N]
+//   a 1-D A is treated as [1, K] and a 1-D B as [K, 1], the added dim is
+//   removed from the result, so [K] x [K] -> []
+std::vector<TypeInfo> matmul(const Context& c) {
+    c.require_inputs(2, 2);
+    require_matmul_type(c, 0);
+    c.require_same_dtype(0, 1);
+
+    std::vector<int64_t> a = c.in(0).shape, b = c.in(1).shape;
+    if (a.empty() || b.empty())
+        c.fail("inputs must be at least 1-D, got " + shape_of(a) + " and " + shape_of(b));
+
+    const bool a_vec = a.size() == 1, b_vec = b.size() == 1;
+    if (a_vec) a.insert(a.begin(), 1);
+    if (b_vec) b.push_back(1);
+
+    int64_t ka = a[a.size() - 1], kb = b[b.size() - 2];
+    if (ka >= 0 && kb >= 0 && ka != kb)
+        c.fail("inner dimensions differ: " + shape_of(c.in(0).shape) + " x " +
+               shape_of(c.in(1).shape) + " (" + std::to_string(ka) + " vs " +
+               std::to_string(kb) + ")");
+
+    // leading (batch) dims broadcast like elementwise ops
+    std::vector<int64_t> out;
+    try {
+        out = broadcast_shapes({a.begin(), a.end() - 2}, {b.begin(), b.end() - 2});
+    } catch (const ShapeError& e) {
+        c.fail(std::string("batch dimensions: ") + e.what());
+    }
+    if (!a_vec) out.push_back(a[a.size() - 2]);
+    if (!b_vec) out.push_back(b[b.size() - 1]);
+    return {{c.in(0).dtype, out}};
+}
+
+// Gemm(A, B, C?) = alpha * A' * B' + beta * C, with A' = transpose(A) if
+// transA and B' = transpose(B) if transB
+//   A' is [M, K], B' is [K, N], the result is [M, N]
+//   C is optional and must broadcast to [M, N] without changing it
+std::vector<TypeInfo> gemm(const Context& c) {
+    c.require_inputs(2, 3);
+    require_matmul_type(c, 0);
+    c.require_same_dtype(0, 1);
+    if (c.has(2)) c.require_same_dtype(0, 2);
+
+    const auto& a = c.in(0).shape;
+    const auto& b = c.in(1).shape;
+    if (a.size() != 2) c.fail("A must be 2-D, got " + shape_of(a));
+    if (b.size() != 2) c.fail("B must be 2-D, got " + shape_of(b));
+
+    const bool trans_a = c.node.attr_int("transA", 0) != 0;
+    const bool trans_b = c.node.attr_int("transB", 0) != 0;
+    int64_t m  = trans_a ? a[1] : a[0];
+    int64_t ka = trans_a ? a[0] : a[1];
+    int64_t kb = trans_b ? b[1] : b[0];
+    int64_t n  = trans_b ? b[0] : b[1];
+    if (ka >= 0 && kb >= 0 && ka != kb)
+        c.fail("inner dimensions differ: A " + shape_of(a) + (trans_a ? " (transposed)" : "") +
+               ", B " + shape_of(b) + (trans_b ? " (transposed)" : "") + " (" +
+               std::to_string(ka) + " vs " + std::to_string(kb) + ")");
+
+    // C broadcasts one way only: into [M, N]
+    if (c.has(2)) {
+        const auto& cs = c.in(2).shape;
+        const std::vector<int64_t> target = {m, n};
+        bool ok = cs.size() <= 2;
+        for (size_t i = 0; ok && i < cs.size(); ++i) {
+            int64_t cd = cs[i], td = target[target.size() - cs.size() + i];
+            ok = cd == 1 || cd < 0 || td < 0 || cd == td;
+        }
+        if (!ok)
+            c.fail("C with shape " + shape_of(cs) + " cannot broadcast to the result " +
+                   shape_of(target));
+    }
+    return {{c.in(0).dtype, {m, n}}};
+}
+
 const std::unordered_map<OpType, Rule>& rules() {
     static const std::unordered_map<OpType, Rule> table = {
         {OpType::Relu,     unary_numeric},
@@ -202,6 +293,8 @@ const std::unordered_map<OpType, Rule>& rules() {
         {OpType::Div,      binary_arith},
         {OpType::Pow,      pow_rule},
         {OpType::Constant, constant},
+        {OpType::MatMul,   matmul},
+        {OpType::Gemm,     gemm},
     };
     return table;
 }
