@@ -430,3 +430,143 @@ TEST(shape_mlp_end_to_end) {
     CHECK_EQ(info(g, "r").shape, (Shape{-1, 8}));
     CHECK_EQ(info(g, "y").shape, (Shape{-1, 3}));
 }
+
+// TESTS - RESHAPE
+
+static Graph reshape_graph(const Shape& in, const std::vector<int64_t>& target, bool allowzero = false) {
+    Graph g = one_node(OpType::Reshape, {in});
+    Tensor t("target", {static_cast<int64_t>(target.size())}, DType::INT64);
+    t.set_int64_data(target);
+    t.shape = {static_cast<int64_t>(target.size())};
+    g.add_initializer(t);
+    g.nodes[0].inputs.push_back("target");
+    if (allowzero) g.nodes[0].add_attr("allowzero", int64_t{1});
+    return g;
+}
+
+static Shape reshape_shape(const Shape& in, const std::vector<int64_t>& target, bool allowzero = false) {
+    Graph g = reshape_graph(in, target, allowzero);
+    infer_shapes(g);
+    return info(g, "out0").shape;
+}
+
+TEST(shape_reshape_explicit) {
+    CHECK_EQ(reshape_shape({2, 3, 4}, {6, 4}), (Shape{6, 4}));
+    CHECK_EQ(reshape_shape({24}, {2, 3, 4}), (Shape{2, 3, 4}));
+    CHECK_EQ(reshape_shape({}, {1, 1}), (Shape{1, 1}));            // scalar
+    CHECK_EQ(reshape_shape({1, 1}, {}), (Shape{}));                 // to scalar
+}
+
+TEST(shape_reshape_minus_one) {
+    CHECK_EQ(reshape_shape({2, 3, 4}, {-1}), (Shape{24}));
+    CHECK_EQ(reshape_shape({2, 3, 4}, {2, -1}), (Shape{2, 12}));
+    CHECK_EQ(reshape_shape({1, 1, 28, 28}, {1, -1}), (Shape{1, 784}));
+    // a dynamic input dim keeps the inferred dim dynamic
+    CHECK_EQ(reshape_shape({-1, 1, 28, 28}, {-1, 784}), (Shape{-1, 784}));
+}
+
+TEST(shape_reshape_zero_copies) {
+    CHECK_EQ(reshape_shape({2, 3, 4}, {0, -1}), (Shape{2, 12}));
+    CHECK_EQ(reshape_shape({2, 3, 4}, {0, 0, 2, 2}), (Shape{2, 3, 2, 2}));
+    // the copied dynamic batch cancels out, so -1 can still be solved
+    CHECK_EQ(reshape_shape({-1, 16, 7, 7}, {0, -1}), (Shape{-1, 784}));
+    CHECK_EQ(reshape_shape({-1, 784}, {0, 28, 28}), (Shape{-1, 28, 28}));
+}
+
+TEST(shape_reshape_allowzero) {
+    // with allowzero=1 a 0 is a literal empty dim
+    CHECK_EQ(reshape_shape({0, 4}, {4, 0}, true), (Shape{4, 0}));
+    Graph bad = reshape_graph({2, 3}, {0, -1}, true);
+    CHECK(contains(shape_error(bad), "both 0 and -1 with allowzero=1"));
+}
+
+TEST(shape_reshape_errors) {
+    Graph count = reshape_graph({2, 3, 4}, {5, 5});
+    CHECK(contains(shape_error(count), "cannot reshape [2, 3, 4] to [5, 5]: 24 vs 25 elements"));
+
+    Graph divide = reshape_graph({2, 3, 4}, {5, -1});
+    CHECK(contains(shape_error(divide), "24 elements are not divisible by 5"));
+
+    Graph two = reshape_graph({2, 3}, {-1, -1});
+    CHECK(contains(shape_error(two), "more than one -1"));
+
+    Graph neg = reshape_graph({6}, {-2, 3});
+    CHECK(contains(shape_error(neg), "invalid dim -2"));
+
+    Graph copy = reshape_graph({6}, {2, 0});
+    CHECK(contains(shape_error(copy), "copies dim 1 with 0, but the input [6] has rank 1"));
+}
+
+TEST(shape_reshape_needs_constant_shape) {
+    // the target shape is a graph input: not known at compile time
+    Graph g = one_node(OpType::Reshape, {{2, 3}});
+    g.inputs.push_back("target");
+    g.add_value_info(Tensor("target", {1}, DType::INT64));
+    g.nodes[0].inputs.push_back("target");
+    CHECK(contains(shape_error(g), "('target') must be a constant"));
+}
+
+TEST(shape_reshape_shape_from_constant_node) {
+    // exporters often produce the target shape with a Constant node
+    Graph g("const_shape");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {2, 3, 4}, DType::FLOAT32));
+    Node c("shape", OpType::Constant, {}, {"s"});
+    c.add_attr("value_ints", std::vector<int64_t>{4, -1});
+    g.add_node(c);
+    g.add_node(Node("reshape", OpType::Reshape, {"x", "s"}, {"y"}));
+    infer_shapes(g);
+    CHECK_EQ(info(g, "y").shape, (Shape{4, 6}));
+}
+
+// TESTS - FLATTEN
+
+static Shape flatten_shape(const Shape& in, int64_t axis) {
+    Graph g = one_node(OpType::Flatten, {in});
+    g.nodes[0].add_attr("axis", axis);
+    infer_shapes(g);
+    return info(g, "out0").shape;
+}
+
+TEST(shape_flatten) {
+    CHECK_EQ(flatten_shape({2, 3, 4, 5}, 1), (Shape{2, 60}));
+    CHECK_EQ(flatten_shape({2, 3, 4, 5}, 2), (Shape{6, 20}));
+    CHECK_EQ(flatten_shape({2, 3, 4, 5}, 0), (Shape{1, 120}));
+    CHECK_EQ(flatten_shape({2, 3, 4, 5}, 4), (Shape{120, 1}));
+    CHECK_EQ(flatten_shape({2, 3, 4, 5}, -1), (Shape{24, 5}));
+    CHECK_EQ(flatten_shape({-1, 16, 1, 1}, 1), (Shape{-1, 16}));    // after GlobalAveragePool
+    CHECK_EQ(flatten_shape({8, -1, 4}, 1), (Shape{8, -1}));
+
+    // default axis is 1
+    Graph g = one_node(OpType::Flatten, {{2, 3, 4}});
+    infer_shapes(g);
+    CHECK_EQ(info(g, "out0").shape, (Shape{2, 12}));
+
+    Graph bad = one_node(OpType::Flatten, {{2, 3}});
+    bad.nodes[0].add_attr("axis", int64_t{3});
+    CHECK(contains(shape_error(bad), "axis 3 is out of range [-2, 2] for rank 2"));
+}
+
+// TESTS - SOFTMAX
+
+TEST(shape_softmax) {
+    Graph g = one_node(OpType::Softmax, {{-1, 10}});
+    infer_shapes(g);
+    CHECK_EQ(info(g, "out0").shape, (Shape{-1, 10}));
+
+    Graph axis = one_node(OpType::Softmax, {{2, 3, 4}});
+    axis.nodes[0].add_attr("axis", int64_t{-3});
+    infer_shapes(axis);
+    CHECK_EQ(info(axis, "out0").shape, (Shape{2, 3, 4}));
+
+    Graph bad_axis = one_node(OpType::Softmax, {{2, 3}});
+    bad_axis.nodes[0].add_attr("axis", int64_t{2});
+    CHECK(contains(shape_error(bad_axis), "axis 2 is out of range [-2, 1]"));
+
+    Graph scalar = one_node(OpType::Softmax, {{}});
+    CHECK(contains(shape_error(scalar), "rank >= 1"));
+
+    Graph ints = one_node(OpType::Softmax, {{4}}, DType::INT64);
+    CHECK(contains(shape_error(ints), "must be float32 or float64"));
+}

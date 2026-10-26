@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include "frontend/onnx.h"
+#include "analysis/shape_inference.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -267,4 +268,47 @@ TEST(fixture_optionals_constant) {
     CHECK(two.shape.empty());
     CHECK_EQ(two.float_ptr()[0], 2.0f);
     CHECK_EQ(m.graph.initializers.at("shape").int64_ptr()[0], 3);
+}
+
+// TESTS - SHAPE INFERENCE ON FIXTURES
+
+TEST(fixture_shapes_mlp) {
+    // every intermediate of the real mlp fixture gets a type
+    Model m = load_model(fixture_path("mlp.onnx"));
+    infer_shapes(m.graph);
+    auto shape = [&](const char* name) { return m.graph.get_tensor_info(name)->shape; };
+    CHECK_EQ(shape("xf"), (std::vector<int64_t>{-1, 16}));
+    CHECK_EQ(shape("h"), (std::vector<int64_t>{-1, 8}));
+    CHECK_EQ(shape("hr"), (std::vector<int64_t>{-1, 8}));
+    CHECK_EQ(shape("logits"), (std::vector<int64_t>{-1, 3}));
+    CHECK_EQ(shape("probs"), (std::vector<int64_t>{-1, 3}));
+}
+
+TEST(fixture_shapes_linear_relu_optionals) {
+    Model linear = load_model(fixture_path("linear.onnx"));
+    infer_shapes(linear.graph);
+    CHECK_EQ(linear.graph.get_tensor_info("mm")->shape, (std::vector<int64_t>{1, 3}));
+
+    Model relu = load_model(fixture_path("relu.onnx"));
+    infer_shapes(relu.graph);
+    CHECK_EQ(relu.graph.get_tensor_info("y")->shape, (std::vector<int64_t>{1, 4}));
+
+    // Constant, Mul, Dropout with an omitted mask, Reshape with an initializer
+    // shape, and Clip with an omitted min
+    Model opt = load_model(fixture_path("optionals.onnx"));
+    infer_shapes(opt.graph);
+    CHECK_EQ(opt.graph.get_tensor_info("two")->shape, (std::vector<int64_t>{}));
+    CHECK_EQ(opt.graph.get_tensor_info("r")->shape, (std::vector<int64_t>{3, 2}));
+    CHECK_EQ(opt.graph.get_tensor_info("y")->shape, (std::vector<int64_t>{3, 2}));
+}
+
+TEST(fixture_shapes_cnn_stops_at_conv) {
+    // Conv has no rule yet, the error names the node
+    Model m = load_model(fixture_path("cnn.onnx"));
+    try {
+        infer_shapes(m.graph);
+        throw std::runtime_error("expected ShapeError");
+    } catch (const ShapeError& e) {
+        CHECK(std::string(e.what()).find("node 'Conv_0' (Conv): no shape inference rule") != std::string::npos);
+    }
 }

@@ -20,7 +20,7 @@ std::string where(const Node& n) {
 // everything a rule needs about one node
 class Context {
 public:
-    Context(const Node& n, const Graph& g) : node(n) {
+    Context(const Node& n, const Graph& g) : node(n), graph_(g) {
         for (const std::string& name : n.inputs) {
             if (name.empty()) {          // omitted optional input
                 inputs_.push_back(nullptr);
@@ -79,8 +79,37 @@ public:
             fail("input " + std::to_string(i) + " must be a scalar, got shape " + in(i).shape_str());
     }
 
+    // values of an int64 input that must be known at compile time, from an
+    // initializer or a Constant node (value, value_int or value_ints)
+    std::vector<int64_t> const_ints(size_t i) const {
+        const std::string& name = node.inputs.at(i);
+        const Tensor* t = nullptr;
+        if (auto it = graph_.initializers.find(name); it != graph_.initializers.end()) {
+            t = &it->second;
+        } else {
+            for (const Node& n : graph_.nodes) {
+                if (n.is_dead || n.op != OpType::Constant || n.outputs.empty() || n.outputs[0] != name)
+                    continue;
+                if (n.has_attr("value_ints")) return n.attr_ints("value_ints");
+                if (n.has_attr("value_int"))  return {n.attr_int("value_int")};
+                if (n.has_attr("value"))      t = &n.get_attr("value").as_tensor();
+                break;
+            }
+        }
+        if (!t)
+            fail("input " + std::to_string(i) + " ('" + name + "') must be a constant "
+                 "(an initializer or Constant node), shapes computed at run time are not supported");
+        if (t->dtype != DType::INT64)
+            fail("input " + std::to_string(i) + " ('" + name + "') must be int64, got " +
+                 dtype_name(t->dtype));
+        int64_t n = t->num_elements();
+        if (n == 0) return {};
+        return std::vector<int64_t>(t->int64_ptr(), t->int64_ptr() + n);
+    }
+
 private:
     std::vector<const Tensor*> inputs_;
+    const Graph& graph_;
 };
 
 using Rule = std::vector<TypeInfo> (*)(const Context&);
@@ -273,6 +302,111 @@ std::vector<TypeInfo> gemm(const Context& c) {
     return {{c.in(0).dtype, {m, n}}};
 }
 
+// RULES - SHAPE MANIPULATION
+
+// product of dims, -1 if any is dynamic
+int64_t product(const std::vector<int64_t>& dims, size_t begin, size_t end) {
+    int64_t p = 1;
+    for (size_t i = begin; i < end; ++i) {
+        if (dims[i] < 0) return -1;
+        if (__builtin_mul_overflow(p, dims[i], &p)) return -1;
+    }
+    return p;
+}
+
+// normalise an axis attribute in [-rank, rank + extra) to [0, rank + extra)
+int64_t normalize_axis(const Context& c, int64_t axis, int64_t rank, int64_t extra) {
+    int64_t lo = -rank, hi = rank + extra - 1;
+    if (axis < lo || axis > hi)
+        c.fail("axis " + std::to_string(axis) + " is out of range [" + std::to_string(lo) +
+               ", " + std::to_string(hi) + "] for rank " + std::to_string(rank));
+    return axis < 0 ? axis + rank : axis;
+}
+
+// Reshape(data, shape), the target shape must be a constant
+//   0 copies the input dim at the same position (unless allowzero=1, then
+//   it means an empty dim), -1 is inferred from the element count
+std::vector<TypeInfo> reshape(const Context& c) {
+    c.require_inputs(2, 2);
+    const std::vector<int64_t>& in = c.in(0).shape;
+    std::vector<int64_t> target = c.const_ints(1);
+    if (c.in(1).shape.size() != 1) c.fail("shape input must be 1-D, got " + c.in(1).shape_str());
+    const bool allowzero = c.node.attr_int("allowzero", 0) != 0;
+
+    std::vector<int64_t> out(target.size());
+    std::vector<bool> copied(in.size(), false);   // input dims carried over by a 0
+    int infer_at = -1;
+    for (size_t i = 0; i < target.size(); ++i) {
+        int64_t t = target[i];
+        if (t == -1) {
+            if (infer_at >= 0) c.fail("shape " + shape_of(target) + " has more than one -1");
+            infer_at = static_cast<int>(i);
+            out[i] = -1;
+        } else if (t == 0 && !allowzero) {
+            if (i >= in.size())
+                c.fail("shape " + shape_of(target) + " copies dim " + std::to_string(i) +
+                       " with 0, but the input " + shape_of(in) + " has rank " +
+                       std::to_string(in.size()));
+            out[i] = in[i];
+            copied[i] = true;
+        } else if (t < 0) {
+            c.fail("shape " + shape_of(target) + " has invalid dim " + std::to_string(t));
+        } else {
+            out[i] = t;
+        }
+    }
+    if (allowzero && infer_at >= 0 &&
+        std::find(target.begin(), target.end(), 0) != target.end())
+        c.fail("shape " + shape_of(target) + " has both 0 and -1 with allowzero=1");
+
+    // element counts, ignoring dims carried over unchanged by 0
+    std::vector<int64_t> in_rest, out_rest;
+    for (size_t i = 0; i < in.size(); ++i)
+        if (!copied[i]) in_rest.push_back(in[i]);
+    for (size_t i = 0; i < out.size(); ++i)
+        if (!(i < copied.size() && copied[i]) && static_cast<int>(i) != infer_at) out_rest.push_back(out[i]);
+    int64_t in_count = product(in_rest, 0, in_rest.size());
+    int64_t out_count = product(out_rest, 0, out_rest.size());
+
+    if (infer_at >= 0) {
+        if (in_count >= 0 && out_count > 0) {
+            if (in_count % out_count != 0)
+                c.fail("cannot reshape " + shape_of(in) + " to " + shape_of(target) + ": " +
+                       std::to_string(in_count) + " elements are not divisible by " +
+                       std::to_string(out_count));
+            out[static_cast<size_t>(infer_at)] = in_count / out_count;
+        } else if (out_count == 0 && in_count > 0) {
+            c.fail("cannot reshape " + shape_of(in) + " to " + shape_of(target) +
+                   ": -1 next to a zero sized dim");
+        }
+        // otherwise the inferred dim stays dynamic
+    } else if (in_count >= 0 && out_count >= 0 && in_count != out_count) {
+        c.fail("cannot reshape " + shape_of(in) + " to " + shape_of(target) + ": " +
+               std::to_string(in_count) + " vs " + std::to_string(out_count) + " elements");
+    }
+    return {{c.in(0).dtype, out}};
+}
+
+// Flatten(x), axis in [-rank, rank], default 1
+//   [d0 .. d(axis-1)] and [d(axis) .. d(rank-1)] each collapse into one dim
+std::vector<TypeInfo> flatten(const Context& c) {
+    c.require_inputs(1, 1);
+    const std::vector<int64_t>& in = c.in(0).shape;
+    const int64_t rank = static_cast<int64_t>(in.size());
+    const size_t axis = static_cast<size_t>(normalize_axis(c, c.node.attr_int("axis", 1), rank, 1));
+    return {{c.in(0).dtype, {product(in, 0, axis), product(in, axis, in.size())}}};
+}
+
+// Softmax(x), opset 13+: normalises along one axis (default -1), same shape
+std::vector<TypeInfo> softmax(const Context& c) {
+    c.require_inputs(1, 1);
+    c.require_float(0);
+    const int64_t rank = static_cast<int64_t>(c.in(0).shape.size());
+    if (rank == 0) c.fail("input must have rank >= 1, got a scalar");
+    normalize_axis(c, c.node.attr_int("axis", -1), rank, 0);
+    return {{c.in(0).dtype, c.in(0).shape}};
+}
+
 const std::unordered_map<OpType, Rule>& rules() {
     static const std::unordered_map<OpType, Rule> table = {
         {OpType::Relu,     unary_numeric},
@@ -295,6 +429,9 @@ const std::unordered_map<OpType, Rule>& rules() {
         {OpType::Constant, constant},
         {OpType::MatMul,   matmul},
         {OpType::Gemm,     gemm},
+        {OpType::Reshape,  reshape},
+        {OpType::Flatten,  flatten},
+        {OpType::Softmax,  softmax},
     };
     return table;
 }
