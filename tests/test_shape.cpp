@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include "analysis/shape_inference.h"
+#include "analysis/specialize.h"
 #include "core/graph.h"
 
 #include <string>
@@ -569,4 +570,85 @@ TEST(shape_softmax) {
 
     Graph ints = one_node(OpType::Softmax, {{4}}, DType::INT64);
     CHECK(contains(shape_error(ints), "must be float32 or float64"));
+}
+
+// TESTS - SPECIALISING INPUT SHAPES
+
+static Graph dynamic_mlp() {
+    // x[?, 16] -> Gemm -> Relu -> y[?, 4]
+    Graph g("dyn");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {-1, 16}, DType::FLOAT32));
+    Tensor w("w", {4, 16}, DType::FLOAT32);
+    w.set_float_data(std::vector<float>(64, 0.0f));
+    w.shape = {4, 16};
+    g.add_initializer(w);
+    Node fc("fc", OpType::Gemm, {"x", "w"}, {"h"});
+    fc.add_attr("transB", int64_t{1});
+    g.add_node(fc);
+    g.add_node(Node("relu", OpType::Relu, {"h"}, {"y"}));
+    return g;
+}
+
+TEST(specialize_dynamic_tensors_listed) {
+    Graph g = dynamic_mlp();
+    infer_shapes(g);
+    // input first, then node outputs in execution order
+    CHECK_EQ(dynamic_tensors(g), (std::vector<std::string>{"x", "h", "y"}));
+}
+
+TEST(specialize_batch_makes_everything_static) {
+    Graph g = dynamic_mlp();
+    CHECK_EQ(set_batch_size(g, 8), 1);
+    infer_shapes(g);
+    CHECK(dynamic_tensors(g).empty());
+    CHECK_EQ(info(g, "h").shape, (Shape{8, 4}));
+    CHECK_EQ(info(g, "y").shape, (Shape{8, 4}));
+}
+
+TEST(specialize_batch_leaves_fixed_inputs) {
+    Graph g = one_node(OpType::Add, {{2, 3}, {-1, 3}});
+    CHECK_EQ(set_batch_size(g, 5), 1);
+    CHECK_EQ(info(g, "in0").shape, (Shape{2, 3}));   // already fixed
+    CHECK_EQ(info(g, "in1").shape, (Shape{5, 3}));
+
+    Graph scalar = one_node(OpType::Relu, {{}});
+    CHECK_EQ(set_batch_size(scalar, 5), 0);           // nothing to change
+
+    CHECK_THROWS(set_batch_size(g, 0));
+}
+
+TEST(specialize_input_shape) {
+    Graph g = dynamic_mlp();
+    set_input_shape(g, "x", {3, 16});
+    infer_shapes(g);
+    CHECK_EQ(info(g, "y").shape, (Shape{3, 4}));
+    CHECK(dynamic_tensors(g).empty());
+}
+
+TEST(specialize_input_shape_errors) {
+    auto error = [](const std::string& input, const Shape& shape) {
+        Graph g = dynamic_mlp();
+        try {
+            set_input_shape(g, input, shape);
+        } catch (const ShapeError& e) {
+            return std::string(e.what());
+        }
+        throw std::runtime_error("expected ShapeError");
+    };
+    CHECK(contains(error("x", {3, 16, 1}), "rank 3 instead of 2"));
+    CHECK(contains(error("x", {3, 15}), "dim 1 is fixed at 16"));
+    CHECK(contains(error("x", {-1, 16}), "dim 0 must be >= 0"));
+    CHECK(contains(error("w", {4, 16}), "'w' is not a graph input (inputs: x)"));
+    CHECK(contains(error("nope", {1}), "is not a graph input"));
+}
+
+TEST(specialize_declared_intermediates_follow_inputs) {
+    // the model declared h as [?, 4]; after fixing the batch it becomes [2, 4]
+    Graph g = dynamic_mlp();
+    g.add_value_info(Tensor("h", {-1, 4}, DType::FLOAT32));
+    set_batch_size(g, 2);
+    infer_shapes(g);
+    CHECK_EQ(info(g, "h").shape, (Shape{2, 4}));
 }

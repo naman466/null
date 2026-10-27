@@ -32,12 +32,13 @@ target_link_libraries(null_frontend PUBLIC null_core)
 # analyses over the IR
 add_library(null_analysis STATIC
     src/analysis/shape_inference.cpp
+    src/analysis/specialize.cpp
 )
 target_link_libraries(null_analysis PUBLIC null_core)
 
 add_executable(null_cli src/main.cpp)
 
-target_link_libraries(null_cli PRIVATE null_core null_frontend)
+target_link_libraries(null_cli PRIVATE null_core null_frontend null_analysis)
 
 # tests
 enable_testing()
@@ -75,7 +76,20 @@ function(add_cli_test name expect_exit expect_output)
 endfunction()
 
 add_cli_test(dump           0 "4  /softmax: Softmax.logits. -> probs: float32.[?], 3." "${FIXTURES}/mlp.onnx" --dump)
-add_cli_test(summary        0 "graph 'linear': 2 nodes, 2 initializers, 1 input, 1 output, ok" "${FIXTURES}/linear.onnx")
+add_cli_test(summary        0 "graph 'linear': 2 nodes, 2 initializers, 1 input, 1 output, all shapes known, ok" "${FIXTURES}/linear.onnx")
+add_cli_test(dynamic_input  2 "input 'x' has a dynamic shape float32.[?], 1, 4, 4.*--batch N" "${FIXTURES}/mlp.onnx")
+add_cli_test(batch          0 "graph 'mlp': .*all shapes known, ok" "${FIXTURES}/mlp.onnx" --batch 4)
+add_cli_test(batch_equals   0 "all shapes known, ok" "${FIXTURES}/mlp.onnx" --batch=1)
+add_cli_test(input_shape    0 "all shapes known, ok" "${FIXTURES}/mlp.onnx" --input-shape x=2,1,4,4)
+add_cli_test(input_shape_bad_dim 2 "cannot set input 'x' .* dim 2 is fixed at 4" "${FIXTURES}/mlp.onnx" --input-shape x=2,1,5,4)
+add_cli_test(input_shape_not_input 2 "'y' is not a graph input" "${FIXTURES}/mlp.onnx" --input-shape y=1)
+add_cli_test(bad_batch      1 "--batch needs a positive integer, got '0'" "${FIXTURES}/mlp.onnx" --batch 0)
+add_cli_test(bad_input_shape 1 "--input-shape needs NAME=D0,D1" "${FIXTURES}/mlp.onnx" --input-shape oops)
+add_cli_test(batch_no_effect 0 "note: --batch had no effect" "${FIXTURES}/linear.onnx" --batch 3)
+add_cli_test(dump_batch     0 "4  /softmax: Softmax.logits. -> probs: float32.4, 3." "${FIXTURES}/mlp.onnx" --dump --batch 4)
+add_cli_test(dump_dynamic_note 0 "6 tensors still have dynamic dims" "${FIXTURES}/mlp.onnx" --dump)
+add_cli_test(no_shape_rule  2 "shape inference: node 'Conv_0' .Conv.: no shape inference rule" "${FIXTURES}/cnn.onnx")
+add_cli_test(dump_no_shape_rule 0 "warning: shape inference stopped" "${FIXTURES}/cnn.onnx" --dump)
 add_cli_test(unsupported    2 "unsupported operators: LSTM .2 nodes., Shape .1 node." "${FIXTURES}/unsupported_ops.onnx")
 add_cli_test(old_opset      2 "opset 11 is not supported" "${FIXTURES}/opset11.onnx")
 add_cli_test(missing_file   2 "cannot open 'does-not-exist.onnx'" does-not-exist.onnx)
