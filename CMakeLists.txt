@@ -1,9 +1,14 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(Null VERSION 0.1.0 LANGUAGES CXX)
+project(Null VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# the runtime and generated code are plain C99
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -21,6 +26,10 @@ endif()
 add_library(null_core INTERFACE)
 
 target_include_directories(null_core INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
+# c runtime used by generated code, header-only
+add_library(null_runtime INTERFACE)
+target_include_directories(null_runtime INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/runtime")
 
 # onnx frontend
 add_library(null_frontend STATIC
@@ -54,6 +63,16 @@ foreach(suite IN LISTS TEST_SUITES)
         NULL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     add_test(NAME ${suite} COMMAND test_${suite})
 endforeach()
+
+# runtime kernels, tested as c99 and as c++
+add_executable(test_runtime_c tests/runtime/test_kernels.c)
+target_link_libraries(test_runtime_c PRIVATE null_runtime)
+add_test(NAME runtime_c COMMAND test_runtime_c)
+
+add_executable(test_runtime_cpp tests/runtime/test_kernels_cpp.cpp)
+target_link_libraries(test_runtime_cpp PRIVATE null_runtime)
+target_include_directories(test_runtime_cpp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime")
+add_test(NAME runtime_cpp COMMAND test_runtime_cpp)
 
 # mutation fuzzer, a short fixed-seed run is part of ctest
 # longer runs: fuzz_frontend <iterations> <rng_seed>
