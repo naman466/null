@@ -74,6 +74,11 @@ target_link_libraries(test_runtime_cpp PRIVATE null_runtime)
 target_include_directories(test_runtime_cpp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime")
 add_test(NAME runtime_cpp COMMAND test_runtime_cpp)
 
+# the runtime tests compare floats bit for bit, so no fused multiply-add:
+# a fused a*b+c rounds once instead of twice and changes the last bit
+target_compile_options(test_runtime_c PRIVATE -ffp-contract=off)
+target_compile_options(test_runtime_cpp PRIVATE -ffp-contract=off)
+
 # mutation fuzzer, a short fixed-seed run is part of ctest
 # longer runs: fuzz_frontend <iterations> <rng_seed>
 add_executable(fuzz_frontend tests/fuzz_frontend.cpp)
