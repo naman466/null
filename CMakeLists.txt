@@ -30,6 +30,10 @@ target_include_directories(null_core INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/src"
 # c runtime used by generated code, header-only
 add_library(null_runtime INTERFACE)
 target_include_directories(null_runtime INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/runtime")
+# softmax uses expf; on windows it is in the c runtime, elsewhere in libm
+if(UNIX)
+    target_link_libraries(null_runtime INTERFACE m)
+endif()
 
 # onnx frontend
 add_library(null_frontend STATIC
