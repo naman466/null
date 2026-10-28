@@ -57,7 +57,7 @@ target_link_libraries(null_cli PRIVATE null_core null_frontend null_analysis)
 enable_testing()
 
 # one executable per suite, built from tests/test_<suite>.cpp
-set(TEST_SUITES tensor node graph protobuf onnx adversarial fixtures dump shape)
+set(TEST_SUITES tensor node graph protobuf onnx adversarial fixtures dump shape pytorch)
 
 foreach(suite IN LISTS TEST_SUITES)
     add_executable(test_${suite} tests/test_main.cpp tests/test_${suite}.cpp)
