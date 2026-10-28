@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <fstream>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -7,6 +8,7 @@
 
 #include "analysis/shape_inference.h"
 #include "analysis/specialize.h"
+#include "backend/emit_c.h"
 #include "core/dump.h"
 #include "frontend/onnx.h"
 
@@ -19,11 +21,13 @@ static void print_usage(std::ostream& out) {
     out << "Usage: nullc <model.onnx> [options]\n"
            "\n"
            "Loads an ONNX model, infers every tensor's shape, and checks that null\n"
-           "can compile it. Compiling needs every shape to be known, so models with\n"
-           "dynamic dims (like a variable batch size) need them fixed with --batch\n"
-           "or --input-shape.\n"
+           "can compile it; with -o, writes the compiled model as one C99 file.\n"
+           "Compiling needs every shape to be known, so models with dynamic dims\n"
+           "(like a variable batch size) need them fixed with --batch or\n"
+           "--input-shape.\n"
            "\n"
            "Options:\n"
+           "  -o FILE                    write the compiled model to FILE as C99\n"
            "  --batch N                  set the dynamic first dim of every input to N\n"
            "  --input-shape NAME=D0,D1   set the full shape of input NAME (repeatable)\n"
            "  --dump                     print the graph: inputs, outputs, weights and\n"
@@ -77,6 +81,7 @@ int main(int argc, char** argv) {
     std::string model_path;
     bool dump = false;
     std::optional<int64_t> batch;
+    std::string output_path;
     std::vector<std::pair<std::string, std::vector<int64_t>>> input_shapes;
 
     for (size_t i = 0; i < args.size(); ++i) {
@@ -97,6 +102,9 @@ int main(int argc, char** argv) {
             return kExitOk;
         } else if (arg == "--dump") {
             dump = true;
+        } else if (auto v = value_of("-o")) {
+            if (v->empty()) return usage_error("-o needs a file name");
+            output_path = *v;
         } else if (auto v = value_of("--batch")) {
             batch = parse_int(*v);
             if (!batch || *batch < 1)
@@ -198,5 +206,21 @@ int main(int argc, char** argv) {
               << ", " << null::count_str(g.initializers.size(), "initializer") << ", "
               << null::count_str(g.inputs.size(), "input") << ", "
               << null::count_str(g.outputs.size(), "output") << ", all shapes known, ok\n";
+
+    if (!output_path.empty()) {
+        std::string source;
+        try {
+            source = null::emit_c(g);
+        } catch (const null::EmitError& e) {
+            std::cerr << "nullc: error: code generation: " << e.what() << "\n";
+            return kExitModel;
+        }
+        std::ofstream out(output_path, std::ios::binary);
+        if (!out || !(out << source) || !out.flush()) {
+            std::cerr << "nullc: error: cannot write '" << output_path << "'\n";
+            return kExitModel;
+        }
+        std::cout << "wrote " << output_path << " (" << null::bytes_str(source.size()) << ")\n";
+    }
     return kExitOk;
 }

@@ -1,0 +1,252 @@
+#include "test_framework.h"
+#include "analysis/shape_inference.h"
+#include "backend/emit_c.h"
+#include "core/graph.h"
+
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <random>
+#include <sstream>
+#include <string>
+#include <vector>
+
+#ifndef NULL_RUNTIME_HEADER
+#error "NULL_RUNTIME_HEADER must point at runtime/null_runtime.h"
+#endif
+
+using namespace null;
+
+static bool contains(const std::string& s, const std::string& part) {
+    return s.find(part) != std::string::npos;
+}
+
+static std::string emit_error(const Graph& g) {
+    try {
+        emit_c(g);
+    } catch (const EmitError& e) {
+        return e.what();
+    }
+    throw std::runtime_error("expected EmitError");
+}
+
+static void add_weights(Graph& g, const std::string& name, const std::vector<int64_t>& shape, float value) {
+    Tensor t(name, shape, DType::FLOAT32);
+    int64_t n = 1;
+    for (int64_t d : shape) n *= d;
+    t.set_float_data(std::vector<float>(static_cast<size_t>(n), value));
+    t.shape = shape;
+    g.add_initializer(t);
+}
+
+// x[1, 4] -> Flatten -> Gemm(w[3, 4]^T, b[3]) -> Relu -> Softmax -> y[1, 3]
+static Graph small_mlp() {
+    Graph g("small_mlp");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {1, 4}, DType::FLOAT32));
+    add_weights(g, "w", {3, 4}, 0.5f);
+    add_weights(g, "b", {3}, 1.0f);
+    g.add_node(Node("flat", OpType::Flatten, {"x"}, {"xf"}));
+    Node fc("fc", OpType::Gemm, {"xf", "w", "b"}, {"h"});
+    fc.add_attr("transB", int64_t{1});
+    g.add_node(fc);
+    g.add_node(Node("relu", OpType::Relu, {"h"}, {"r"}));
+    g.add_node(Node("softmax", OpType::Softmax, {"r"}, {"y"}));
+    infer_shapes(g);
+    return g;
+}
+
+// TESTS - FLOAT LITERALS
+
+TEST(emit_float_literals) {
+    CHECK_EQ(c_float_literal(1.5f), "0x1.800000p+0f");
+    CHECK_EQ(c_float_literal(-2.0f), "-0x1.000000p+1f");
+    CHECK_EQ(c_float_literal(0.0f), "0x0p+0f");
+    CHECK_EQ(c_float_literal(-0.0f), "-0x0p+0f");
+    CHECK_EQ(c_float_literal(1e-45f), "0x0.000002p-126f");            // smallest subnormal
+    CHECK_EQ(c_float_literal(3.4028235e38f), "0x1.fffffep+127f");     // largest float
+    CHECK_EQ(c_float_literal(std::numeric_limits<float>::infinity()), "INFINITY");
+    CHECK_EQ(c_float_literal(-std::numeric_limits<float>::infinity()), "-INFINITY");
+    CHECK_EQ(c_float_literal(std::nanf("")), "NAN");
+}
+
+TEST(emit_float_literals_round_trip) {
+    // every finite float, written as a literal and parsed back, keeps all its bits
+    std::mt19937 rng(7);
+    for (int i = 0; i < 100000; ++i) {
+        uint32_t bits = static_cast<uint32_t>(rng());
+        float v;
+        std::memcpy(&v, &bits, 4);
+        if (!std::isfinite(v)) continue;
+        std::string lit = c_float_literal(v);
+        float back = std::strtof(lit.c_str(), nullptr);   // strtof reads hex floats, stops at the 'f'
+        uint32_t back_bits;
+        std::memcpy(&back_bits, &back, 4);
+        if (back_bits != bits) throw std::runtime_error("literal " + lit + " does not round-trip");
+    }
+}
+
+// TESTS - RUNTIME EMBEDDING
+
+TEST(emit_runtime_source_is_the_header) {
+    // the copy cmake embeds must be byte-identical to the file (semicolons
+    // and quotes survive the trip through cmake)
+    std::ifstream f(NULL_RUNTIME_HEADER, std::ios::binary);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    std::string file = ss.str();
+    // text mode on checkout may have added \r, the embedded copy never has them
+    std::string expected;
+    for (char c : file) if (c != '\r') expected += c;
+    CHECK(!expected.empty());
+    CHECK_EQ(std::string(runtime_source()), expected);
+}
+
+TEST(emit_embeds_or_includes_runtime) {
+    Graph g = small_mlp();
+    std::string embedded = emit_c(g);
+    CHECK(contains(embedded, "static inline void null_gemm_f32("));
+    CHECK(!contains(embedded, "#include \"null_runtime.h\""));
+
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string included = emit_c(g, opt);
+    CHECK(contains(included, "#include \"null_runtime.h\""));
+    CHECK(!contains(included, "static inline void null_gemm_f32("));
+}
+
+// TESTS - GENERATED CODE
+
+TEST(emit_small_mlp) {
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(small_mlp(), opt);
+    CHECK(contains(c, "void model_run(const float* in_x, float* out_y) {"));
+    CHECK(contains(c, "static const float w_w[12] = {"));
+    CHECK(contains(c, "static const float w_b[3] = {"));
+    // Flatten moves no data: the gemm reads the input directly
+    CHECK(contains(c, "/* xf is in_x, no data moves */"));
+    CHECK(contains(c, "null_gemm_f32(in_x, w_w, w_b, t_h, 1, 3, 4, 0, 1, 0x1.000000p+0f, 0x1.000000p+0f, 0, 1);"));
+    CHECK(contains(c, "null_relu_f32(t_h, t_r, 3);"));
+    CHECK(contains(c, "null_softmax_f32(t_r, t_y, 1, 3, 1);"));
+    CHECK(contains(c, "for (i = 0; i < 3; ++i) out_y[i] = t_y[i];"));
+    // weights are exact hex literals
+    CHECK(contains(c, "0x1.000000p-1f,"));
+    CHECK(!contains(c, "t_xf"));   // no buffer for the alias
+}
+
+TEST(emit_broadcasting_add) {
+    Graph g("bias");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {2, 3}, DType::FLOAT32));
+    add_weights(g, "b", {3}, 0.25f);
+    g.add_node(Node("add", OpType::Add, {"x", "b"}, {"y"}));
+    g.add_node(Node("same", OpType::Mul, {"y", "y"}, {"z"}));
+    g.outputs = {"z"};
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(g, opt);
+    // different shapes: strides computed at compile time, 0 along the broadcast dim
+    CHECK(contains(c, "null_add_bcast_f32(in_x, w_b, t_y, 2,"));
+    CHECK(contains(c, "_shape[2] = {2, 3};"));
+    CHECK(contains(c, "_a_strides[2] = {3, 1};"));
+    CHECK(contains(c, "_b_strides[2] = {0, 1};"));
+    // same shapes: the flat kernel
+    CHECK(contains(c, "null_mul_f32(t_y, t_y, t_z, 6);"));
+}
+
+TEST(emit_batched_matmul) {
+    Graph g("bmm");
+    g.inputs = {"a"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("a", {4, 2, 3}, DType::FLOAT32));
+    add_weights(g, "w", {3, 5}, 1.0f);
+    g.add_node(Node("mm", OpType::MatMul, {"a", "w"}, {"y"}));
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(g, opt);
+    // batch [4] read from a with stride M*K = 6, the shared weights with stride 0
+    CHECK(contains(c, "null_matmul_f32(in_a, w_w, t_y, 2, 5, 3, 1,"));
+    CHECK(contains(c, "_a_strides[1] = {6};"));
+    CHECK(contains(c, "_b_strides[1] = {0};"));
+}
+
+TEST(emit_unique_identifiers) {
+    // names that sanitise to the same C identifier get distinct ones
+    Graph g("names");
+    g.inputs = {"a/b"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("a/b", {2}, DType::FLOAT32));
+    g.add_node(Node("r1", OpType::Relu, {"a/b"}, {"a.b"}));
+    g.add_node(Node("r2", OpType::Relu, {"a.b"}, {"a-b"}));
+    g.add_node(Node("r3", OpType::Relu, {"a-b"}, {"y"}));
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(g, opt);
+    CHECK(contains(c, "const float* in_a_b"));
+    CHECK(contains(c, "static float t_a_b[2];"));
+    CHECK(contains(c, "static float t_a_b_2[2];"));
+    CHECK(contains(c, "null_relu_f32(t_a_b, t_a_b_2, 2);"));
+}
+
+TEST(emit_reshape_to_output_and_constants) {
+    // a reshaped input as the graph output is copied out; an int64 shape
+    // constant is used at compile time and never emitted
+    Graph g("reshape");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {2, 3}, DType::FLOAT32));
+    Tensor shape("shape", {1}, DType::INT64);
+    shape.set_int64_data({6});
+    shape.shape = {1};
+    g.add_initializer(shape);
+    g.add_node(Node("reshape", OpType::Reshape, {"x", "shape"}, {"y"}));
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(g, opt);
+    CHECK(contains(c, "for (i = 0; i < 6; ++i) out_y[i] = in_x[i];"));
+    CHECK(!contains(c, "w_shape"));
+}
+
+// TESTS - ERRORS
+
+TEST(emit_errors) {
+    Graph dynamic("dyn");
+    dynamic.inputs = {"x"};
+    dynamic.outputs = {"y"};
+    dynamic.add_value_info(Tensor("x", {-1, 4}, DType::FLOAT32));
+    dynamic.add_node(Node("r", OpType::Relu, {"x"}, {"y"}));
+    infer_shapes(dynamic);
+    CHECK(contains(emit_error(dynamic), "tensor 'x' has dynamic shape float32[?, 4]"));
+
+    Graph unsupported("clip");
+    unsupported.inputs = {"x"};
+    unsupported.outputs = {"y"};
+    unsupported.add_value_info(Tensor("x", {4}, DType::FLOAT32));
+    unsupported.add_node(Node("c", OpType::Clip, {"x"}, {"y"}));
+    infer_shapes(unsupported);
+    CHECK(contains(emit_error(unsupported), "node 'c' (Clip): no code generation for this operator yet"));
+
+    Graph ints("ints");
+    ints.inputs = {"x"};
+    ints.outputs = {"y"};
+    ints.add_value_info(Tensor("x", {4}, DType::INT64));
+    ints.add_node(Node("r", OpType::Relu, {"x"}, {"y"}));
+    infer_shapes(ints);
+    CHECK(contains(emit_error(ints), "input 'x' is int64, only float32 inputs are supported"));
+
+    Graph uninferred("none");
+    uninferred.inputs = {"x"};
+    uninferred.outputs = {"y"};
+    uninferred.add_value_info(Tensor("x", {4}, DType::FLOAT32));
+    uninferred.add_node(Node("r", OpType::Relu, {"x"}, {"y"}));
+    CHECK(contains(emit_error(uninferred), "has no shape, run shape inference first"));
+}

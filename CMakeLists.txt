@@ -49,22 +49,50 @@ add_library(null_analysis STATIC
 )
 target_link_libraries(null_analysis PUBLIC null_core)
 
+# c code generation. the runtime header is embedded in the compiler as a
+# string, so generated model.c files can carry it and need nothing else;
+# editing the header re-runs configure, which regenerates the string
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/runtime/null_runtime.h")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/runtime/null_runtime.h" NULL_RUNTIME_TEXT)
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/runtime_source.cpp"
+    "// generated from runtime/null_runtime.h by CMakeLists.txt, do not edit
+"
+    "#include \"backend/emit_c.h\"
+"
+    "namespace null {
+"
+    "const char* runtime_source() {
+"
+    "    return R\"NULLRT(" "${NULL_RUNTIME_TEXT}" ")NULLRT\";
+"
+    "}
+"
+    "} // namespace null
+")
+
+add_library(null_backend STATIC
+    src/backend/emit_c.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/runtime_source.cpp"
+)
+target_link_libraries(null_backend PUBLIC null_core null_analysis null_runtime)
+
 add_executable(null_cli src/main.cpp)
 
-target_link_libraries(null_cli PRIVATE null_core null_frontend null_analysis)
+target_link_libraries(null_cli PRIVATE null_core null_frontend null_analysis null_backend)
 
 # tests
 enable_testing()
 
 # one executable per suite, built from tests/test_<suite>.cpp
-set(TEST_SUITES tensor node graph protobuf onnx adversarial fixtures dump shape pytorch)
+set(TEST_SUITES tensor node graph protobuf onnx adversarial fixtures dump shape pytorch emit)
 
 foreach(suite IN LISTS TEST_SUITES)
     add_executable(test_${suite} tests/test_main.cpp tests/test_${suite}.cpp)
-    target_link_libraries(test_${suite} PRIVATE null_core null_frontend null_analysis)
+    target_link_libraries(test_${suite} PRIVATE null_core null_frontend null_analysis null_backend)
     target_compile_definitions(test_${suite} PRIVATE
         NULL_TEST_SUITE="${suite}"
-        NULL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+        NULL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+        NULL_RUNTIME_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/runtime/null_runtime.h")
     add_test(NAME ${suite} COMMAND test_${suite})
 endforeach()
 
@@ -125,3 +153,24 @@ add_cli_test(no_args        1 "Usage: nullc")
 add_cli_test(unknown_option 1 "unknown option '--bogus'" --bogus)
 add_cli_test(two_models     1 "only one model can be given" a.onnx b.onnx)
 add_cli_test(help           0 "Usage: nullc" --help)
+
+# generated C: nullc -o on every model it can compile, then the C compiler
+# must accept the file as C99 with every warning an error. the output folder
+# is created at configure time, so any of these tests can run alone
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated_models")
+foreach(model relu linear mlp initializers_as_inputs
+              pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy)
+    string(REPLACE "/" "_" test_name "${model}")
+    add_test(NAME codegen_${test_name}
+        COMMAND ${CMAKE_COMMAND}
+            "-DNULLC=$<TARGET_FILE:null_cli>"
+            "-DMODEL=${FIXTURES}/${model}.onnx"
+            "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/generated_models"
+            "-DCC=${CMAKE_C_COMPILER}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_generated.cmake")
+endforeach()
+
+add_cli_test(codegen_unsupported_op 2 "code generation: node 'Clip_4' .Clip.: no code generation for this operator yet"
+             "${FIXTURES}/optionals.onnx" -o "${CMAKE_CURRENT_BINARY_DIR}/generated_models/optionals.c")
+add_cli_test(output_needs_name 1 "-o needs a file name" "${FIXTURES}/mlp.onnx" -o)
+add_cli_test(output_written 0 "wrote .*mlp_cli.c" "${FIXTURES}/mlp.onnx" --batch 1 -o "${CMAKE_CURRENT_BINARY_DIR}/generated_models/mlp_cli.c")
