@@ -302,6 +302,29 @@ private:
         out << decls_.str() << "\nvoid " << opt_.function_name << "(";
         for (size_t i = 0; i < params_.size(); ++i) out << (i ? ", " : "") << params_[i];
         out << ") {\n    int64_t i;\n" << body_.str() << "    /* outputs */\n" << tail.str() << "}\n";
+
+        // the same entry point in array form, with the sizes, so a generic
+        // driver or a language binding can call any model without knowing
+        // its signature
+        const std::string& f = opt_.function_name;
+        const size_t n_in = g_.inputs.size(), n_out = g_.outputs.size();
+        auto sizes = [&](const std::vector<std::string>& names) {
+            std::string s;
+            for (size_t i = 0; i < names.size(); ++i)
+                s += (i ? ", " : "") + std::to_string(info(names[i]).num_elements());
+            return s;
+        };
+        out << "\n/* array form, for generic drivers and bindings */\n"
+            << "const int " << f << "_num_inputs = " << n_in << ";\n"
+            << "const int " << f << "_num_outputs = " << n_out << ";\n"
+            << "const int64_t " << f << "_input_sizes[" << (n_in ? n_in : 1) << "] = {"
+            << (n_in ? sizes(g_.inputs) : "0") << "};\n"
+            << "const int64_t " << f << "_output_sizes[" << n_out << "] = {" << sizes(g_.outputs) << "};\n"
+            << "void " << f << "_v(const float* const* inputs, float* const* outputs) {\n"
+            << "    (void)inputs;   /* a model may have no inputs */\n    " << f << "(";
+        for (size_t i = 0; i < n_in; ++i) out << (i ? ", " : "") << "inputs[" << i << "]";
+        for (size_t i = 0; i < n_out; ++i) out << (n_in + i ? ", " : "") << "outputs[" << i << "]";
+        out << ");\n}\n";
         return out.str();
     }
 };

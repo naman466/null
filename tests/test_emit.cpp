@@ -250,3 +250,23 @@ TEST(emit_errors) {
     uninferred.add_node(Node("r", OpType::Relu, {"x"}, {"y"}));
     CHECK(contains(emit_error(uninferred), "has no shape, run shape inference first"));
 }
+
+TEST(emit_array_entry_point) {
+    // a generic driver can call any model through model_run_v and its sizes
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(small_mlp(), opt);
+    CHECK(contains(c, "const int model_run_num_inputs = 1;"));
+    CHECK(contains(c, "const int model_run_num_outputs = 1;"));
+    CHECK(contains(c, "const int64_t model_run_input_sizes[1] = {4};"));
+    CHECK(contains(c, "const int64_t model_run_output_sizes[1] = {3};"));
+    CHECK(contains(c, "void model_run_v(const float* const* inputs, float* const* outputs) {"));
+    CHECK(contains(c, "model_run(inputs[0], outputs[0]);"));
+
+    // the names follow the chosen function name
+    opt.function_name = "digits";
+    std::string named = emit_c(small_mlp(), opt);
+    CHECK(contains(named, "void digits(const float* in_x, float* out_y) {"));
+    CHECK(contains(named, "void digits_v("));
+    CHECK(contains(named, "const int digits_num_inputs = 1;"));
+}

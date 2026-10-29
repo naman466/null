@@ -174,3 +174,21 @@ add_cli_test(codegen_unsupported_op 2 "code generation: node 'Clip_4' .Clip.: no
              "${FIXTURES}/optionals.onnx" -o "${CMAKE_CURRENT_BINARY_DIR}/generated_models/optionals.c")
 add_cli_test(output_needs_name 1 "-o needs a file name" "${FIXTURES}/mlp.onnx" -o)
 add_cli_test(output_written 0 "wrote .*mlp_cli.c" "${FIXTURES}/mlp.onnx" --batch 1 -o "${CMAKE_CURRENT_BINARY_DIR}/generated_models/mlp_cli.c")
+
+# end to end: compile each model with nullc -o, build the generated C with a
+# driver, run it on recorded inputs and compare with onnx runtime's outputs
+# (tests/fixtures/e2e/*.vectors, written by make_e2e_vectors.py)
+foreach(model relu linear mlp initializers_as_inputs
+              pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy)
+    string(REPLACE "/" "__" vectors "${model}")
+    string(REPLACE "/" "_" test_name "${model}")
+    add_test(NAME e2e_${test_name}
+        COMMAND ${CMAKE_COMMAND}
+            "-DNULLC=$<TARGET_FILE:null_cli>"
+            "-DMODEL=${FIXTURES}/${model}.onnx"
+            "-DVECTORS=${FIXTURES}/e2e/${vectors}.vectors"
+            "-DDRIVER=${CMAKE_CURRENT_SOURCE_DIR}/tests/e2e/run_vectors.c"
+            "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/e2e"
+            "-DCC=${CMAKE_C_COMPILER}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_e2e.cmake")
+endforeach()
