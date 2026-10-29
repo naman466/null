@@ -275,9 +275,10 @@ TEST(shape_missing_input_metadata) {
 }
 
 TEST(shape_unsupported_op_reported) {
-    Graph g = one_node(OpType::Conv, {{1, 3, 8, 8}, {4, 3, 3, 3}});
-    CHECK(contains(shape_error(g), "node 'n' (Conv): no shape inference rule"));
-    CHECK(!has_shape_rule(OpType::Conv));
+    Graph g = one_node(OpType::MaxPool, {{1, 3, 8, 8}});
+    CHECK(contains(shape_error(g), "node 'n' (MaxPool): no shape inference rule"));
+    CHECK(!has_shape_rule(OpType::MaxPool));
+    CHECK(has_shape_rule(OpType::Conv));
     CHECK(has_shape_rule(OpType::Add));
 }
 
@@ -288,7 +289,7 @@ TEST(shape_too_many_outputs) {
 
 TEST(shape_dead_nodes_skipped) {
     Graph g = one_node(OpType::Relu, {{2}});
-    g.add_node(Node("dead", OpType::Conv, {"in0"}, {"junk"}));   // no rule, but dead
+    g.add_node(Node("dead", OpType::MaxPool, {"in0"}, {"junk"}));   // no rule, but dead
     g.nodes.back().is_dead = true;
     infer_shapes(g);
     CHECK(g.get_tensor_info("junk") == nullptr);
@@ -569,6 +570,117 @@ TEST(shape_softmax) {
     CHECK(contains(shape_error(scalar), "rank >= 1"));
 
     Graph ints = one_node(OpType::Softmax, {{4}}, DType::INT64);
+    CHECK(contains(shape_error(ints), "must be float32 or float64"));
+}
+
+// TESTS - CONVOLUTION
+
+// Conv on x with weight w, attributes set by the caller
+static Graph conv_graph(const Shape& x, const Shape& w, bool bias = false) {
+    std::vector<Shape> ins{x, w};
+    if (bias) ins.push_back({w[0]});
+    return one_node(OpType::Conv, ins);
+}
+
+static Shape conv_out(Graph g) {
+    infer_shapes(g);
+    return info(g, "out0").shape;
+}
+
+TEST(shape_conv_defaults) {
+    // lenet's second conv: no padding, stride 1
+    CHECK_EQ(conv_out(conv_graph({1, 6, 14, 14}, {16, 6, 5, 5}, true)), (Shape{1, 16, 10, 10}));
+    CHECK_EQ(conv_out(conv_graph({-1, 3, 8, 8}, {4, 3, 1, 1})), (Shape{-1, 4, 8, 8}));   // batch stays dynamic
+    CHECK_EQ(conv_out(conv_graph({2, 1, 3, 3}, {1, 1, 3, 3})), (Shape{2, 1, 1, 1}));     // kernel fills the input
+}
+
+TEST(shape_conv_pads_strides_dilations) {
+    Graph same = conv_graph({1, 1, 28, 28}, {6, 1, 5, 5});
+    same.nodes[0].add_attr("pads", std::vector<int64_t>{2, 2, 2, 2});
+    CHECK_EQ(conv_out(same), (Shape{1, 6, 28, 28}));
+
+    // asymmetric pads: H gets 1 + 0, W gets 0 + 2
+    Graph asym = conv_graph({1, 1, 5, 5}, {1, 1, 3, 3});
+    asym.nodes[0].add_attr("pads", std::vector<int64_t>{1, 0, 0, 2});
+    CHECK_EQ(conv_out(asym), (Shape{1, 1, 4, 5}));
+
+    // stride 2 rounds down: (7 - 3) / 2 + 1 = 3, (8 - 3) / 2 + 1 = 3
+    Graph stride = conv_graph({1, 1, 7, 8}, {1, 1, 3, 3});
+    stride.nodes[0].add_attr("strides", std::vector<int64_t>{2, 2});
+    CHECK_EQ(conv_out(stride), (Shape{1, 1, 3, 3}));
+
+    // dilation 2 makes a 3x3 kernel span 5x5
+    Graph dil = conv_graph({1, 1, 9, 9}, {1, 1, 3, 3});
+    dil.nodes[0].add_attr("dilations", std::vector<int64_t>{2, 1});
+    CHECK_EQ(conv_out(dil), (Shape{1, 1, 5, 7}));
+}
+
+TEST(shape_conv_groups) {
+    // depthwise: group == C, one input channel per filter
+    Graph dw = conv_graph({1, 8, 6, 6}, {8, 1, 3, 3});
+    dw.nodes[0].add_attr("group", int64_t{8});
+    CHECK_EQ(conv_out(dw), (Shape{1, 8, 4, 4}));
+
+    Graph two = conv_graph({1, 4, 6, 6}, {6, 2, 3, 3});
+    two.nodes[0].add_attr("group", int64_t{2});
+    CHECK_EQ(conv_out(two), (Shape{1, 6, 4, 4}));
+}
+
+TEST(shape_conv_auto_pad) {
+    auto with_pad = [](const char* mode, const Shape& stride) {
+        Graph g = conv_graph({1, 1, 7, 7}, {1, 1, 4, 4});
+        g.nodes[0].add_attr("auto_pad", std::string(mode));
+        g.nodes[0].add_attr("strides", stride);
+        return g;
+    };
+    CHECK_EQ(conv_out(with_pad("SAME_UPPER", {1, 1})), (Shape{1, 1, 7, 7}));
+    CHECK_EQ(conv_out(with_pad("SAME_LOWER", {1, 1})), (Shape{1, 1, 7, 7}));
+    CHECK_EQ(conv_out(with_pad("SAME_UPPER", {2, 3})), (Shape{1, 1, 4, 3}));   // ceil(7 / s)
+    CHECK_EQ(conv_out(with_pad("VALID", {1, 1})), (Shape{1, 1, 4, 4}));
+
+    // the odd pixel of padding goes to the end for UPPER, the start for LOWER
+    std::vector<int64_t> x{1, 1, 7, 7}, w{1, 1, 4, 4};
+    Graph upper = with_pad("SAME_UPPER", {1, 1}), lower = with_pad("SAME_LOWER", {1, 1});
+    ConvGeometry u = conv_geometry(upper.nodes[0], x, w), l = conv_geometry(lower.nodes[0], x, w);
+    CHECK_EQ(u.pad_top, 1); CHECK_EQ(u.pad_bottom, 2);
+    CHECK_EQ(l.pad_top, 2); CHECK_EQ(l.pad_bottom, 1);
+}
+
+TEST(shape_conv_errors) {
+    auto err = [](Graph g) { return shape_error(g); };
+    CHECK(contains(err(conv_graph({1, 3, 8}, {4, 3, 3})), "only 2-D convolution is supported"));
+    CHECK(contains(err(conv_graph({1, -1, 8, 8}, {4, 3, 3, 3})), "must have static C, H and W"));
+    CHECK(contains(err(conv_graph({1, 3, 8, 8}, {4, 2, 3, 3})), "input has 3 channels, but the weight"));
+    CHECK(contains(err(conv_graph({1, 3, 2, 2}, {4, 3, 3, 3})), "is larger than the padded input 2x2"));
+
+    Graph bias = one_node(OpType::Conv, {{1, 3, 8, 8}, {4, 3, 3, 3}, {3}});
+    CHECK(contains(shape_error(bias), "bias must be [4]"));
+
+    Graph group = conv_graph({1, 4, 8, 8}, {3, 2, 3, 3});
+    group.nodes[0].add_attr("group", int64_t{2});
+    CHECK(contains(shape_error(group), "3 output channels are not divisible by group 2"));
+
+    Graph ks = conv_graph({1, 3, 8, 8}, {4, 3, 3, 3});
+    ks.nodes[0].add_attr("kernel_shape", std::vector<int64_t>{5, 5});
+    CHECK(contains(shape_error(ks), "kernel_shape does not match"));
+
+    Graph stride = conv_graph({1, 3, 8, 8}, {4, 3, 3, 3});
+    stride.nodes[0].add_attr("strides", std::vector<int64_t>{0, 1});
+    CHECK(contains(shape_error(stride), "strides must be at least 1"));
+
+    Graph pads = conv_graph({1, 3, 8, 8}, {4, 3, 3, 3});
+    pads.nodes[0].add_attr("pads", std::vector<int64_t>{1, 1});
+    CHECK(contains(shape_error(pads), "pads must have 4 values"));
+
+    Graph neg = conv_graph({1, 3, 8, 8}, {4, 3, 3, 3});
+    neg.nodes[0].add_attr("pads", std::vector<int64_t>{-1, 0, 0, 0});
+    CHECK(contains(shape_error(neg), "pads must not be negative"));
+
+    Graph mode = conv_graph({1, 3, 8, 8}, {4, 3, 3, 3});
+    mode.nodes[0].add_attr("auto_pad", std::string("SAME"));
+    CHECK(contains(shape_error(mode), "unknown auto_pad 'SAME'"));
+
+    Graph ints = one_node(OpType::Conv, {{1, 3, 8, 8}, {4, 3, 3, 3}}, DType::INT64);
     CHECK(contains(shape_error(ints), "must be float32 or float64"));
 }
 

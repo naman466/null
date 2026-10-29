@@ -81,7 +81,8 @@ class ConvBN(nn.Module):
         return self.f(x)
 
 
-CONV = "(Conv): no shape inference rule for this operator yet"
+def no_rule(op):
+    return f"({op}): no shape inference rule for this operator yet"
 
 # (file, model factory, input shape, exporter, dynamic batch, expectation)
 FIXTURES = [
@@ -89,10 +90,10 @@ FIXTURES = [
     ("mlp__dynamo_dyn.onnx",      MLP,     (1, 1, 28, 28), "dynamo", True,  ("compiles", "")),
     ("mlp_view__legacy.onnx",     MLPView, (1, 1, 28, 28), "legacy", False, ("compiles", "")),
     ("mlp_view__legacy_dyn.onnx", MLPView, (1, 1, 28, 28), "legacy", True,  ("load-error", "unsupported operators: Shape (1 node)")),
-    ("lenet__legacy.onnx",        LeNet,   (1, 1, 28, 28), "legacy", False, ("shape-error", CONV)),
-    ("lenet__dynamo.onnx",        LeNet,   (1, 1, 28, 28), "dynamo", False, ("shape-error", CONV)),
-    ("conv_bn__legacy.onnx",      ConvBN,  (1, 3, 32, 32), "legacy", False, ("shape-error", CONV)),
-    ("conv_bn__dynamo.onnx",      ConvBN,  (1, 3, 32, 32), "dynamo", False, ("shape-error", CONV)),
+    ("lenet__legacy.onnx",        LeNet,   (1, 1, 28, 28), "legacy", False, ("shape-error", no_rule("MaxPool"))),
+    ("lenet__dynamo.onnx",        LeNet,   (1, 1, 28, 28), "dynamo", False, ("shape-error", no_rule("MaxPool"))),
+    ("conv_bn__legacy.onnx",      ConvBN,  (1, 3, 32, 32), "legacy", False, ("shape-error", no_rule("GlobalAveragePool"))),
+    ("conv_bn__dynamo.onnx",      ConvBN,  (1, 3, 32, 32), "dynamo", False, ("shape-error", no_rule("ReduceMean"))),
     ("transformer__dynamo.onnx",  lambda: nn.TransformerEncoderLayer(d_model=32, nhead=4, dim_feedforward=64, batch_first=True),
                                            (1, 8, 32),     "dynamo", False, ("load-error", "unsupported operators: LayerNormalization (2 nodes)")),
 ]

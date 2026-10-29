@@ -27,6 +27,23 @@ std::vector<int64_t> broadcast_shapes(const std::vector<int64_t>& a,
 // whether infer_shapes knows how to handle this operator
 bool has_shape_rule(OpType op);
 
+// everything about a 2-D convolution that follows from its attributes and
+// its input and weight shapes, shared by the shape rule and the emitter so
+// both always agree on padding
+struct ConvGeometry {
+    int64_t n, c, h, w;              // input  [N, C, H, W]
+    int64_t m, kh, kw;               // weight [M, C / group, kH, kW]
+    int64_t group;
+    int64_t stride_h, stride_w, dil_h, dil_w;
+    int64_t pad_top, pad_left, pad_bottom, pad_right;
+    int64_t out_h, out_w;            // output [N, M, out_h, out_w]
+};
+
+// computes the geometry of a Conv node, throws ShapeError naming the node
+// if the shapes or attributes are invalid. needs static input and weight shapes
+ConvGeometry conv_geometry(const Node& node, const std::vector<int64_t>& x,
+                           const std::vector<int64_t>& weight);
+
 // infer the type and shape of every live node output, in execution order
 //   - every node input must already have metadata (graph inputs and
 //     initializers do, earlier node outputs get it from this pass)

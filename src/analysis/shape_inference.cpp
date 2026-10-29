@@ -407,6 +407,27 @@ std::vector<TypeInfo> softmax(const Context& c) {
     return {{c.in(0).dtype, c.in(0).shape}};
 }
 
+// RULES - CONVOLUTION
+
+// Conv(x, w, b?), 2-D only: x [N, C, H, W], w [M, C / group, kH, kW], b [M]
+std::vector<TypeInfo> conv(const Context& c) {
+    c.require_inputs(2, 3);
+    c.require_float(0);
+    c.require_same_dtype(0, 1);
+    const auto& x = c.in(0).shape;
+    const auto& w = c.in(1).shape;
+    if (x.size() != 4) c.fail("only 2-D convolution is supported, input must be [N, C, H, W], got " + shape_of(x));
+    for (size_t i = 1; i < 4; ++i)
+        if (x[i] < 0) c.fail("input " + shape_of(x) + " must have static C, H and W");
+    ConvGeometry g = conv_geometry(c.node, x, w);
+    if (c.has(2)) {
+        c.require_same_dtype(0, 2);
+        if (c.in(2).shape != std::vector<int64_t>{g.m})
+            c.fail("bias must be [" + std::to_string(g.m) + "], got " + c.in(2).shape_str());
+    }
+    return {{c.in(0).dtype, {x[0], g.m, g.out_h, g.out_w}}};
+}
+
 const std::unordered_map<OpType, Rule>& rules() {
     static const std::unordered_map<OpType, Rule> table = {
         {OpType::Relu,     unary_numeric},
@@ -432,6 +453,7 @@ const std::unordered_map<OpType, Rule>& rules() {
         {OpType::Reshape,  reshape},
         {OpType::Flatten,  flatten},
         {OpType::Softmax,  softmax},
+        {OpType::Conv,     conv},
     };
     return table;
 }
@@ -477,6 +499,78 @@ std::vector<int64_t> broadcast_shapes(const std::vector<int64_t>& a,
         }
     }
     return out;
+}
+
+ConvGeometry conv_geometry(const Node& node, const std::vector<int64_t>& x,
+                           const std::vector<int64_t>& weight) {
+    auto fail = [&](const std::string& msg) -> ShapeError { return ShapeError(where(node) + ": " + msg); };
+    auto shape = [](const std::vector<int64_t>& s) { return Tensor("", s, DType::UNDEFINED).shape_str(); };
+    if (x.size() != 4) throw fail("input must be [N, C, H, W], got " + shape(x));
+    if (weight.size() != 4) throw fail("weight must be [M, C / group, kH, kW], got " + shape(weight));
+    for (int64_t d : weight)
+        if (d < 1) throw fail("weight must have a static, non-empty shape, got " + shape(weight));
+
+    ConvGeometry g{};
+    g.n = x[0]; g.c = x[1]; g.h = x[2]; g.w = x[3];
+    g.m = weight[0]; g.kh = weight[2]; g.kw = weight[3];
+
+    // attributes, with onnx's defaults
+    auto pair = [&](const char* key, int64_t def) {
+        std::vector<int64_t> v = node.attr_ints(key, {def, def});
+        if (v.size() != 2) throw fail(std::string(key) + " must have 2 values for a 2-D convolution");
+        for (int64_t d : v)
+            if (d < 1) throw fail(std::string(key) + " must be at least 1");
+        return v;
+    };
+    auto strides = pair("strides", 1), dilations = pair("dilations", 1);
+    g.stride_h = strides[0]; g.stride_w = strides[1];
+    g.dil_h = dilations[0]; g.dil_w = dilations[1];
+    g.group = node.attr_int("group", 1);
+    if (node.has_attr("kernel_shape") && node.attr_ints("kernel_shape") != std::vector<int64_t>{g.kh, g.kw})
+        throw fail("kernel_shape does not match the weight " + shape(weight));
+
+    // channels: each of the group's filters sees C / group input channels
+    if (g.group < 1) throw fail("group must be at least 1");
+    if (g.c % g.group != 0 || g.c / g.group != weight[1])
+        throw fail("input has " + std::to_string(g.c) + " channels, but the weight " + shape(weight) +
+                   " with group " + std::to_string(g.group) + " expects " + std::to_string(weight[1] * g.group));
+    if (g.m % g.group != 0)
+        throw fail(std::to_string(g.m) + " output channels are not divisible by group " + std::to_string(g.group));
+
+    // padding: explicit pads [top, left, bottom, right], or computed by auto_pad
+    const int64_t eff_h = (g.kh - 1) * g.dil_h + 1, eff_w = (g.kw - 1) * g.dil_w + 1;
+    const std::string auto_pad = node.attr_str("auto_pad", "NOTSET");
+    if (auto_pad == "NOTSET") {
+        std::vector<int64_t> pads = node.attr_ints("pads", {0, 0, 0, 0});
+        if (pads.size() != 4) throw fail("pads must have 4 values [top, left, bottom, right]");
+        for (int64_t p : pads)
+            if (p < 0) throw fail("pads must not be negative");
+        g.pad_top = pads[0]; g.pad_left = pads[1]; g.pad_bottom = pads[2]; g.pad_right = pads[3];
+    } else if (auto_pad == "VALID") {
+        g.pad_top = g.pad_left = g.pad_bottom = g.pad_right = 0;
+    } else if (auto_pad == "SAME_UPPER" || auto_pad == "SAME_LOWER") {
+        // output = ceil(input / stride), with the padding split evenly and
+        // any odd pixel at the end (UPPER) or the start (LOWER)
+        auto same = [&](int64_t in, int64_t stride, int64_t eff, int64_t& begin, int64_t& end) {
+            const int64_t out = (in + stride - 1) / stride;
+            const int64_t total = std::max<int64_t>(0, (out - 1) * stride + eff - in);
+            begin = auto_pad == "SAME_UPPER" ? total / 2 : total - total / 2;
+            end = total - begin;
+        };
+        same(g.h, g.stride_h, eff_h, g.pad_top, g.pad_bottom);
+        same(g.w, g.stride_w, eff_w, g.pad_left, g.pad_right);
+    } else {
+        throw fail("unknown auto_pad '" + auto_pad + "'");
+    }
+
+    const int64_t span_h = g.h + g.pad_top + g.pad_bottom, span_w = g.w + g.pad_left + g.pad_right;
+    if (span_h < eff_h || span_w < eff_w)
+        throw fail("kernel " + std::to_string(eff_h) + "x" + std::to_string(eff_w) +
+                   " (with dilation) is larger than the padded input " + std::to_string(span_h) + "x" +
+                   std::to_string(span_w));
+    g.out_h = (span_h - eff_h) / g.stride_h + 1;
+    g.out_w = (span_w - eff_w) / g.stride_w + 1;
+    return g;
 }
 
 bool has_shape_rule(OpType op) {

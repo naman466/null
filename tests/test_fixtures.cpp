@@ -302,13 +302,13 @@ TEST(fixture_shapes_linear_relu_optionals) {
     CHECK_EQ(opt.graph.get_tensor_info("y")->shape, (std::vector<int64_t>{3, 2}));
 }
 
-TEST(fixture_shapes_cnn_stops_at_conv) {
-    // Conv has no rule yet, the error names the node
+TEST(fixture_shapes_cnn_stops_after_conv) {
+    // Conv is supported, BatchNormalization (next in the graph) has no rule yet
     Model m = load_model(fixture_path("cnn.onnx"));
     try {
         infer_shapes(m.graph);
         throw std::runtime_error("expected ShapeError");
     } catch (const ShapeError& e) {
-        CHECK(std::string(e.what()).find("node 'Conv_0' (Conv): no shape inference rule") != std::string::npos);
+        CHECK(std::string(e.what()).find("node 'BatchNormalization_1' (BatchNormalization): no shape inference rule") != std::string::npos);
     }
 }

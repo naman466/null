@@ -170,6 +170,7 @@ private:
             case OpType::Gemm:    emit_gemm(n); break;
             case OpType::MatMul:  emit_matmul(n); break;
             case OpType::Softmax: emit_softmax(n); break;
+            case OpType::Conv:    emit_conv(n); break;
             case OpType::Reshape:
             case OpType::Flatten:
             case OpType::Identity:
@@ -257,6 +258,22 @@ private:
         std::string stb = int_array(n.name + "_b_strides", st_b);
         body_ << "    null_matmul_f32(" << a << ", " << b << ", " << y << ", " << m << ", " << nn << ", " << k
               << ", " << batch.size() << ", " << shape << ", " << sta << ", " << stb << ");\n";
+    }
+
+    void emit_conv(const Node& n) {
+        std::string x = read(n, 0), w = read(n, 1);
+        const bool has_b = n.inputs.size() > 2 && !n.inputs[2].empty();
+        std::string b = has_b ? read(n, 2) : "NULL";
+        std::string y = write(n, 0);
+        // the same geometry the shape rule used, so padding always agrees
+        ConvGeometry g = conv_geometry(n, info(n.inputs[0]).shape, info(n.inputs[1]).shape);
+        std::string params = temp(n.name + "_conv");
+        decls_ << "static const null_conv2d_params " << params << " = {"
+               << g.n << ", " << g.c << ", " << g.h << ", " << g.w << ", "
+               << g.m << ", " << g.kh << ", " << g.kw << ", " << g.group << ", "
+               << g.stride_h << ", " << g.stride_w << ", " << g.dil_h << ", " << g.dil_w << ", "
+               << g.pad_top << ", " << g.pad_left << ", " << g.out_h << ", " << g.out_w << "};\n";
+        body_ << "    null_conv2d_f32(" << x << ", " << w << ", " << b << ", " << y << ", &" << params << ");\n";
     }
 
     void emit_softmax(const Node& n) {

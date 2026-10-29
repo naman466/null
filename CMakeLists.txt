@@ -144,7 +144,7 @@ add_cli_test(bad_input_shape 1 "--input-shape needs NAME=D0,D1" "${FIXTURES}/mlp
 add_cli_test(batch_no_effect 0 "note: --batch had no effect" "${FIXTURES}/linear.onnx" --batch 3)
 add_cli_test(dump_batch     0 "4  /softmax: Softmax.logits. -> probs: float32.4, 3." "${FIXTURES}/mlp.onnx" --dump --batch 4)
 add_cli_test(dump_dynamic_note 0 "6 tensors still have dynamic dims" "${FIXTURES}/mlp.onnx" --dump)
-add_cli_test(no_shape_rule  2 "shape inference: node 'Conv_0' .Conv.: no shape inference rule" "${FIXTURES}/cnn.onnx")
+add_cli_test(no_shape_rule  2 "shape inference: node 'BatchNormalization_1' .BatchNormalization.: no shape inference rule" "${FIXTURES}/cnn.onnx")
 add_cli_test(dump_no_shape_rule 0 "warning: shape inference stopped" "${FIXTURES}/cnn.onnx" --dump)
 add_cli_test(unsupported    2 "unsupported operators: LSTM .2 nodes., Shape .1 node." "${FIXTURES}/unsupported_ops.onnx")
 add_cli_test(old_opset      2 "opset 11 is not supported" "${FIXTURES}/opset11.onnx")

@@ -160,6 +160,40 @@ TEST(emit_broadcasting_add) {
     CHECK(contains(c, "null_mul_f32(t_y, t_y, t_z, 6);"));
 }
 
+TEST(emit_conv) {
+    // x[1, 2, 5, 5] -> Conv(w[4, 1, 3, 3], b[4], group 2, stride 2, pads 1 0 1 0) -> Relu -> y
+    Graph g("conv");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {1, 2, 5, 5}, DType::FLOAT32));
+    add_weights(g, "w", {4, 1, 3, 3}, 0.5f);
+    add_weights(g, "b", {4}, 1.0f);
+    Node conv("conv", OpType::Conv, {"x", "w", "b"}, {"h"});
+    conv.add_attr("group", int64_t{2});
+    conv.add_attr("strides", std::vector<int64_t>{2, 2});
+    conv.add_attr("pads", std::vector<int64_t>{1, 0, 1, 0});
+    g.add_node(conv);
+    g.add_node(Node("relu", OpType::Relu, {"h"}, {"y"}));
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(g, opt);
+    // n c h w, m kh kw group, strides, dilations, pad top left, out h w
+    CHECK(contains(c, "_conv = {1, 2, 5, 5, 4, 3, 3, 2, 2, 2, 1, 1, 1, 0, 3, 2};"));
+    CHECK(contains(c, "null_conv2d_f32(in_x, w_w, w_b, t_h, &"));
+    CHECK(contains(c, "null_relu_f32(t_h, t_y, 24);"));
+
+    // no bias: the kernel gets NULL
+    Graph nb("conv_nb");
+    nb.inputs = {"x"};
+    nb.outputs = {"y"};
+    nb.add_value_info(Tensor("x", {1, 1, 3, 3}, DType::FLOAT32));
+    add_weights(nb, "w", {1, 1, 2, 2}, 1.0f);
+    nb.add_node(Node("conv", OpType::Conv, {"x", "w"}, {"y"}));
+    infer_shapes(nb);
+    CHECK(contains(emit_c(nb, opt), "null_conv2d_f32(in_x, w_w, NULL, t_y, &"));
+}
+
 TEST(emit_batched_matmul) {
     Graph g("bmm");
     g.inputs = {"a"};
