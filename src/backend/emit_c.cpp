@@ -171,6 +171,7 @@ private:
             case OpType::MatMul:  emit_matmul(n); break;
             case OpType::Softmax: emit_softmax(n); break;
             case OpType::Conv:    emit_conv(n); break;
+            case OpType::MaxPool: emit_maxpool(n); break;
             case OpType::Reshape:
             case OpType::Flatten:
             case OpType::Identity:
@@ -274,6 +275,17 @@ private:
                << g.stride_h << ", " << g.stride_w << ", " << g.dil_h << ", " << g.dil_w << ", "
                << g.pad_top << ", " << g.pad_left << ", " << g.out_h << ", " << g.out_w << "};\n";
         body_ << "    null_conv2d_f32(" << x << ", " << w << ", " << b << ", " << y << ", &" << params << ");\n";
+    }
+
+    void emit_maxpool(const Node& n) {
+        std::string x = read(n, 0), y = write(n, 0);
+        PoolGeometry g = pool_geometry(n, info(n.inputs[0]).shape);
+        std::string params = temp(n.name + "_pool");
+        decls_ << "static const null_maxpool2d_params " << params << " = {"
+               << g.n << ", " << g.c << ", " << g.h << ", " << g.w << ", " << g.kh << ", " << g.kw << ", "
+               << g.stride_h << ", " << g.stride_w << ", " << g.dil_h << ", " << g.dil_w << ", "
+               << g.pad_top << ", " << g.pad_left << ", " << g.out_h << ", " << g.out_w << "};\n";
+        body_ << "    null_maxpool2d_f32(" << x << ", " << y << ", &" << params << ");\n";
     }
 
     void emit_softmax(const Node& n) {

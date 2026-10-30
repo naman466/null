@@ -159,7 +159,8 @@ add_cli_test(help           0 "Usage: nullc" --help)
 # is created at configure time, so any of these tests can run alone
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated_models")
 foreach(model relu linear mlp initializers_as_inputs
-              pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy)
+              pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy
+              pytorch/lenet__legacy pytorch/lenet__dynamo)
     string(REPLACE "/" "_" test_name "${model}")
     add_test(NAME codegen_${test_name}
         COMMAND ${CMAKE_COMMAND}
@@ -179,7 +180,8 @@ add_cli_test(output_written 0 "wrote .*mlp_cli.c" "${FIXTURES}/mlp.onnx" --batch
 # driver, run it on recorded inputs and compare with onnx runtime's outputs
 # (tests/fixtures/e2e/*.vectors, written by make_e2e_vectors.py)
 foreach(model relu linear mlp initializers_as_inputs
-              pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy)
+              pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy
+              pytorch/lenet__legacy pytorch/lenet__dynamo)
     string(REPLACE "/" "__" vectors "${model}")
     string(REPLACE "/" "_" test_name "${model}")
     add_test(NAME e2e_${test_name}

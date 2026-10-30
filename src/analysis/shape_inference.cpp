@@ -428,6 +428,22 @@ std::vector<TypeInfo> conv(const Context& c) {
     return {{c.in(0).dtype, {x[0], g.m, g.out_h, g.out_w}}};
 }
 
+// RULES - POOLING
+
+// MaxPool(x) -> y, 2-D only: x [N, C, H, W], y [N, C, outH, outW]
+std::vector<TypeInfo> max_pool(const Context& c) {
+    c.require_inputs(1, 1);
+    c.require_float(0);
+    if (c.node.outputs.size() > 1 && !c.node.outputs[1].empty())
+        c.fail("the Indices output is not supported");
+    const auto& x = c.in(0).shape;
+    if (x.size() != 4) c.fail("only 2-D pooling is supported, input must be [N, C, H, W], got " + shape_of(x));
+    for (size_t i = 1; i < 4; ++i)
+        if (x[i] < 0) c.fail("input " + shape_of(x) + " must have static C, H and W");
+    PoolGeometry g = pool_geometry(c.node, x);
+    return {{c.in(0).dtype, {x[0], x[1], g.out_h, g.out_w}}};
+}
+
 const std::unordered_map<OpType, Rule>& rules() {
     static const std::unordered_map<OpType, Rule> table = {
         {OpType::Relu,     unary_numeric},
@@ -454,6 +470,7 @@ const std::unordered_map<OpType, Rule>& rules() {
         {OpType::Flatten,  flatten},
         {OpType::Softmax,  softmax},
         {OpType::Conv,     conv},
+        {OpType::MaxPool,  max_pool},
     };
     return table;
 }
@@ -501,50 +518,44 @@ std::vector<int64_t> broadcast_shapes(const std::vector<int64_t>& a,
     return out;
 }
 
-ConvGeometry conv_geometry(const Node& node, const std::vector<int64_t>& x,
-                           const std::vector<int64_t>& weight) {
-    auto fail = [&](const std::string& msg) -> ShapeError { return ShapeError(where(node) + ": " + msg); };
-    auto shape = [](const std::vector<int64_t>& s) { return Tensor("", s, DType::UNDEFINED).shape_str(); };
-    if (x.size() != 4) throw fail("input must be [N, C, H, W], got " + shape(x));
-    if (weight.size() != 4) throw fail("weight must be [M, C / group, kH, kW], got " + shape(weight));
-    for (int64_t d : weight)
-        if (d < 1) throw fail("weight must have a static, non-empty shape, got " + shape(weight));
+namespace {
 
-    ConvGeometry g{};
-    g.n = x[0]; g.c = x[1]; g.h = x[2]; g.w = x[3];
-    g.m = weight[0]; g.kh = weight[2]; g.kw = weight[3];
+// strides, dilations, padding and output size of a 2-D sliding window of
+// kh x kw over an h x w image, shared by Conv and the pooling operators
+struct Window {
+    int64_t stride_h, stride_w, dil_h, dil_w;
+    int64_t pad_top, pad_left, pad_bottom, pad_right;
+    int64_t out_h, out_w;
+};
+
+Window sliding_window(const Node& node, int64_t h, int64_t w, int64_t kh, int64_t kw, bool pooling) {
+    auto fail = [&](const std::string& msg) -> ShapeError { return ShapeError(where(node) + ": " + msg); };
+    Window g{};
 
     // attributes, with onnx's defaults
-    auto pair = [&](const char* key, int64_t def) {
-        std::vector<int64_t> v = node.attr_ints(key, {def, def});
-        if (v.size() != 2) throw fail(std::string(key) + " must have 2 values for a 2-D convolution");
+    auto pair = [&](const char* key) {
+        std::vector<int64_t> v = node.attr_ints(key, {1, 1});
+        if (v.size() != 2) throw fail(std::string(key) + " must have 2 values for a 2-D window");
         for (int64_t d : v)
             if (d < 1) throw fail(std::string(key) + " must be at least 1");
         return v;
     };
-    auto strides = pair("strides", 1), dilations = pair("dilations", 1);
+    auto strides = pair("strides"), dilations = pair("dilations");
     g.stride_h = strides[0]; g.stride_w = strides[1];
     g.dil_h = dilations[0]; g.dil_w = dilations[1];
-    g.group = node.attr_int("group", 1);
-    if (node.has_attr("kernel_shape") && node.attr_ints("kernel_shape") != std::vector<int64_t>{g.kh, g.kw})
-        throw fail("kernel_shape does not match the weight " + shape(weight));
-
-    // channels: each of the group's filters sees C / group input channels
-    if (g.group < 1) throw fail("group must be at least 1");
-    if (g.c % g.group != 0 || g.c / g.group != weight[1])
-        throw fail("input has " + std::to_string(g.c) + " channels, but the weight " + shape(weight) +
-                   " with group " + std::to_string(g.group) + " expects " + std::to_string(weight[1] * g.group));
-    if (g.m % g.group != 0)
-        throw fail(std::to_string(g.m) + " output channels are not divisible by group " + std::to_string(g.group));
+    const bool ceil_mode = pooling && node.attr_int("ceil_mode", 0) != 0;
 
     // padding: explicit pads [top, left, bottom, right], or computed by auto_pad
-    const int64_t eff_h = (g.kh - 1) * g.dil_h + 1, eff_w = (g.kw - 1) * g.dil_w + 1;
+    const int64_t eff_h = (kh - 1) * g.dil_h + 1, eff_w = (kw - 1) * g.dil_w + 1;
     const std::string auto_pad = node.attr_str("auto_pad", "NOTSET");
     if (auto_pad == "NOTSET") {
         std::vector<int64_t> pads = node.attr_ints("pads", {0, 0, 0, 0});
         if (pads.size() != 4) throw fail("pads must have 4 values [top, left, bottom, right]");
         for (int64_t p : pads)
             if (p < 0) throw fail("pads must not be negative");
+        // a pooling window must overlap the image (onnx runtime and pytorch check this too)
+        if (pooling && (pads[0] >= kh || pads[2] >= kh || pads[1] >= kw || pads[3] >= kw))
+            throw fail("pads must be smaller than the kernel");
         g.pad_top = pads[0]; g.pad_left = pads[1]; g.pad_bottom = pads[2]; g.pad_right = pads[3];
     } else if (auto_pad == "VALID") {
         g.pad_top = g.pad_left = g.pad_bottom = g.pad_right = 0;
@@ -557,19 +568,81 @@ ConvGeometry conv_geometry(const Node& node, const std::vector<int64_t>& x,
             begin = auto_pad == "SAME_UPPER" ? total / 2 : total - total / 2;
             end = total - begin;
         };
-        same(g.h, g.stride_h, eff_h, g.pad_top, g.pad_bottom);
-        same(g.w, g.stride_w, eff_w, g.pad_left, g.pad_right);
+        same(h, g.stride_h, eff_h, g.pad_top, g.pad_bottom);
+        same(w, g.stride_w, eff_w, g.pad_left, g.pad_right);
     } else {
         throw fail("unknown auto_pad '" + auto_pad + "'");
     }
 
-    const int64_t span_h = g.h + g.pad_top + g.pad_bottom, span_w = g.w + g.pad_left + g.pad_right;
+    const int64_t span_h = h + g.pad_top + g.pad_bottom, span_w = w + g.pad_left + g.pad_right;
     if (span_h < eff_h || span_w < eff_w)
         throw fail("kernel " + std::to_string(eff_h) + "x" + std::to_string(eff_w) +
                    " (with dilation) is larger than the padded input " + std::to_string(span_h) + "x" +
                    std::to_string(span_w));
-    g.out_h = (span_h - eff_h) / g.stride_h + 1;
-    g.out_w = (span_w - eff_w) / g.stride_w + 1;
+    // ceil_mode rounds up, so a last, partial window counts; but not one that
+    // would start in the end padding and see no pixels at all
+    auto count = [&](int64_t in, int64_t span, int64_t eff, int64_t stride, int64_t pad_begin) {
+        if (!ceil_mode || auto_pad != "NOTSET") return (span - eff) / stride + 1;
+        int64_t out = (span - eff + stride - 1) / stride + 1;
+        if ((out - 1) * stride >= in + pad_begin) --out;
+        return out;
+    };
+    g.out_h = count(h, span_h, eff_h, g.stride_h, g.pad_top);
+    g.out_w = count(w, span_w, eff_w, g.stride_w, g.pad_left);
+    return g;
+}
+
+} // namespace
+
+ConvGeometry conv_geometry(const Node& node, const std::vector<int64_t>& x,
+                           const std::vector<int64_t>& weight) {
+    auto fail = [&](const std::string& msg) -> ShapeError { return ShapeError(where(node) + ": " + msg); };
+    auto shape = [](const std::vector<int64_t>& s) { return Tensor("", s, DType::UNDEFINED).shape_str(); };
+    if (x.size() != 4) throw fail("input must be [N, C, H, W], got " + shape(x));
+    if (weight.size() != 4) throw fail("weight must be [M, C / group, kH, kW], got " + shape(weight));
+    for (int64_t d : weight)
+        if (d < 1) throw fail("weight must have a static, non-empty shape, got " + shape(weight));
+
+    ConvGeometry g{};
+    g.n = x[0]; g.c = x[1]; g.h = x[2]; g.w = x[3];
+    g.m = weight[0]; g.kh = weight[2]; g.kw = weight[3];
+    g.group = node.attr_int("group", 1);
+    if (node.has_attr("kernel_shape") && node.attr_ints("kernel_shape") != std::vector<int64_t>{g.kh, g.kw})
+        throw fail("kernel_shape does not match the weight " + shape(weight));
+
+    // channels: each of the group's filters sees C / group input channels
+    if (g.group < 1) throw fail("group must be at least 1");
+    if (g.c % g.group != 0 || g.c / g.group != weight[1])
+        throw fail("input has " + std::to_string(g.c) + " channels, but the weight " + shape(weight) +
+                   " with group " + std::to_string(g.group) + " expects " + std::to_string(weight[1] * g.group));
+    if (g.m % g.group != 0)
+        throw fail(std::to_string(g.m) + " output channels are not divisible by group " + std::to_string(g.group));
+
+    Window win = sliding_window(node, g.h, g.w, g.kh, g.kw, false);
+    g.stride_h = win.stride_h; g.stride_w = win.stride_w; g.dil_h = win.dil_h; g.dil_w = win.dil_w;
+    g.pad_top = win.pad_top; g.pad_left = win.pad_left; g.pad_bottom = win.pad_bottom; g.pad_right = win.pad_right;
+    g.out_h = win.out_h; g.out_w = win.out_w;
+    return g;
+}
+
+PoolGeometry pool_geometry(const Node& node, const std::vector<int64_t>& x) {
+    auto fail = [&](const std::string& msg) -> ShapeError { return ShapeError(where(node) + ": " + msg); };
+    if (x.size() != 4)
+        throw fail("only 2-D pooling is supported, input must be [N, C, H, W], got " +
+                   Tensor("", x, DType::UNDEFINED).shape_str());
+    if (!node.has_attr("kernel_shape")) throw fail("kernel_shape is required");
+    std::vector<int64_t> k = node.attr_ints("kernel_shape");
+    if (k.size() != 2) throw fail("kernel_shape must have 2 values for 2-D pooling");
+    if (k[0] < 1 || k[1] < 1) throw fail("kernel_shape must be at least 1");
+    if (node.attr_int("storage_order", 0) != 0) throw fail("storage_order 1 (column-major indices) is not supported");
+
+    PoolGeometry g{};
+    g.n = x[0]; g.c = x[1]; g.h = x[2]; g.w = x[3];
+    g.kh = k[0]; g.kw = k[1];
+    Window win = sliding_window(node, g.h, g.w, g.kh, g.kw, true);
+    g.stride_h = win.stride_h; g.stride_w = win.stride_w; g.dil_h = win.dil_h; g.dil_w = win.dil_w;
+    g.pad_top = win.pad_top; g.pad_left = win.pad_left; g.pad_bottom = win.pad_bottom; g.pad_right = win.pad_right;
+    g.out_h = win.out_h; g.out_w = win.out_w;
     return g;
 }
 

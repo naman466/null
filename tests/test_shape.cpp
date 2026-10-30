@@ -275,9 +275,10 @@ TEST(shape_missing_input_metadata) {
 }
 
 TEST(shape_unsupported_op_reported) {
-    Graph g = one_node(OpType::MaxPool, {{1, 3, 8, 8}});
-    CHECK(contains(shape_error(g), "node 'n' (MaxPool): no shape inference rule"));
-    CHECK(!has_shape_rule(OpType::MaxPool));
+    Graph g = one_node(OpType::AveragePool, {{1, 3, 8, 8}});
+    CHECK(contains(shape_error(g), "node 'n' (AveragePool): no shape inference rule"));
+    CHECK(!has_shape_rule(OpType::AveragePool));
+    CHECK(has_shape_rule(OpType::MaxPool));
     CHECK(has_shape_rule(OpType::Conv));
     CHECK(has_shape_rule(OpType::Add));
 }
@@ -289,7 +290,7 @@ TEST(shape_too_many_outputs) {
 
 TEST(shape_dead_nodes_skipped) {
     Graph g = one_node(OpType::Relu, {{2}});
-    g.add_node(Node("dead", OpType::MaxPool, {"in0"}, {"junk"}));   // no rule, but dead
+    g.add_node(Node("dead", OpType::AveragePool, {"in0"}, {"junk"}));   // no rule, but dead
     g.nodes.back().is_dead = true;
     infer_shapes(g);
     CHECK(g.get_tensor_info("junk") == nullptr);
@@ -681,6 +682,94 @@ TEST(shape_conv_errors) {
     CHECK(contains(shape_error(mode), "unknown auto_pad 'SAME'"));
 
     Graph ints = one_node(OpType::Conv, {{1, 3, 8, 8}, {4, 3, 3, 3}}, DType::INT64);
+    CHECK(contains(shape_error(ints), "must be float32 or float64"));
+}
+
+// TESTS - MAXPOOL
+
+static Graph pool_graph(const Shape& x, const Shape& kernel) {
+    Graph g = one_node(OpType::MaxPool, {x});
+    g.nodes[0].add_attr("kernel_shape", kernel);
+    return g;
+}
+
+TEST(shape_maxpool_basic) {
+    // lenet: 2x2 windows, stride 2
+    Graph lenet = pool_graph({1, 6, 28, 28}, {2, 2});
+    lenet.nodes[0].add_attr("strides", std::vector<int64_t>{2, 2});
+    CHECK_EQ(conv_out(lenet), (Shape{1, 6, 14, 14}));
+
+    // default stride is 1, channels and a dynamic batch pass through
+    CHECK_EQ(conv_out(pool_graph({-1, 3, 5, 5}, {3, 3})), (Shape{-1, 3, 3, 3}));
+
+    // resnet's stem: 3x3, stride 2, pad 1
+    Graph stem = pool_graph({1, 64, 112, 112}, {3, 3});
+    stem.nodes[0].add_attr("strides", std::vector<int64_t>{2, 2});
+    stem.nodes[0].add_attr("pads", std::vector<int64_t>{1, 1, 1, 1});
+    CHECK_EQ(conv_out(stem), (Shape{1, 64, 56, 56}));
+
+    Graph dil = pool_graph({1, 1, 7, 7}, {2, 2});
+    dil.nodes[0].add_attr("dilations", std::vector<int64_t>{3, 1});
+    CHECK_EQ(conv_out(dil), (Shape{1, 1, 4, 6}));      // 2 taps 3 apart span 4 rows
+
+    Graph same = pool_graph({1, 1, 5, 5}, {2, 2});
+    same.nodes[0].add_attr("strides", std::vector<int64_t>{2, 2});
+    same.nodes[0].add_attr("auto_pad", std::string("SAME_UPPER"));
+    CHECK_EQ(conv_out(same), (Shape{1, 1, 3, 3}));
+}
+
+TEST(shape_maxpool_ceil_mode) {
+    auto ceil = [](const Shape& x, int64_t k, int64_t stride, const std::vector<int64_t>& pads) {
+        Graph g = pool_graph(x, {k, k});
+        g.nodes[0].add_attr("strides", std::vector<int64_t>{stride, stride});
+        g.nodes[0].add_attr("pads", pads);
+        g.nodes[0].add_attr("ceil_mode", int64_t{1});
+        return conv_out(g);
+    };
+    // 5 wide, 2x2 stride 2: floor gives 2, ceil keeps the partial last window
+    CHECK_EQ(ceil({1, 1, 5, 5}, 2, 2, {0, 0, 0, 0}), (Shape{1, 1, 3, 3}));
+    CHECK_EQ(ceil({1, 1, 6, 6}, 3, 2, {1, 1, 1, 1}), (Shape{1, 1, 4, 4}));
+    // rounding up would add a window starting in the end padding, which is dropped
+    // (onnx's shape inference says 3 here; onnx runtime and its reference give 2)
+    CHECK_EQ(ceil({1, 1, 4, 4}, 2, 2, {0, 0, 1, 1}), (Shape{1, 1, 2, 2}));
+    CHECK_EQ(ceil({1, 1, 7, 7}, 2, 3, {0, 0, 1, 1}), (Shape{1, 1, 3, 3}));
+
+    // ceil_mode is ignored with auto_pad, which already rounds up
+    Graph g = pool_graph({1, 1, 5, 5}, {2, 2});
+    g.nodes[0].add_attr("strides", std::vector<int64_t>{2, 2});
+    g.nodes[0].add_attr("auto_pad", std::string("VALID"));
+    g.nodes[0].add_attr("ceil_mode", int64_t{1});
+    CHECK_EQ(conv_out(g), (Shape{1, 1, 2, 2}));
+}
+
+TEST(shape_maxpool_errors) {
+    Graph no_kernel = one_node(OpType::MaxPool, {{1, 3, 8, 8}});
+    CHECK(contains(shape_error(no_kernel), "kernel_shape is required"));
+    Graph rank = pool_graph({1, 3, 8}, {2, 2});
+    CHECK(contains(shape_error(rank), "only 2-D pooling is supported"));
+    Graph dyn = pool_graph({1, 3, -1, 8}, {2, 2});
+    CHECK(contains(shape_error(dyn), "must have static C, H and W"));
+    Graph k1 = pool_graph({1, 3, 8, 8}, {2});
+    CHECK(contains(shape_error(k1), "kernel_shape must have 2 values"));
+    Graph k0 = pool_graph({1, 3, 8, 8}, {0, 2});
+    CHECK(contains(shape_error(k0), "kernel_shape must be at least 1"));
+    Graph big = pool_graph({1, 3, 2, 2}, {3, 3});
+    CHECK(contains(shape_error(big), "larger than the padded input 2x2"));
+
+    Graph pads = pool_graph({1, 3, 8, 8}, {2, 2});
+    pads.nodes[0].add_attr("pads", std::vector<int64_t>{2, 0, 0, 0});
+    CHECK(contains(shape_error(pads), "pads must be smaller than the kernel"));
+
+    Graph order = pool_graph({1, 3, 8, 8}, {2, 2});
+    order.nodes[0].add_attr("storage_order", int64_t{1});
+    CHECK(contains(shape_error(order), "storage_order 1"));
+
+    Graph indices = one_node(OpType::MaxPool, {{1, 3, 8, 8}}, DType::FLOAT32, 2);
+    indices.nodes[0].add_attr("kernel_shape", std::vector<int64_t>{2, 2});
+    CHECK(contains(shape_error(indices), "the Indices output is not supported"));
+
+    Graph ints = one_node(OpType::MaxPool, {{1, 3, 8, 8}}, DType::INT64);
+    ints.nodes[0].add_attr("kernel_shape", std::vector<int64_t>{2, 2});
     CHECK(contains(shape_error(ints), "must be float32 or float64"));
 }
 

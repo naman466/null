@@ -28,6 +28,7 @@ FIXTURES = os.path.dirname(HERE)
 MODELS = [
     "relu", "linear", "mlp", "initializers_as_inputs",
     "pytorch/mlp__legacy_dyn", "pytorch/mlp__dynamo_dyn", "pytorch/mlp_view__legacy",
+    "pytorch/lenet__legacy", "pytorch/lenet__dynamo",
 ]
 TRIALS = 8
 

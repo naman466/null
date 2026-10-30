@@ -38,12 +38,36 @@ end
 model lenet__legacy.onnx legacy torch 2.14.1 opset 20
 input x 1 1 28 28
 ops Conv:2 Flatten:1 Gemm:3 MaxPool:2 Relu:4
-expect shape-error (MaxPool): no shape inference rule for this operator yet
+expect compiles
+shape /conv1/Conv_output_0 1 6 28 28
+shape /Relu_output_0 1 6 28 28
+shape /MaxPool_output_0 1 6 14 14
+shape /conv2/Conv_output_0 1 16 10 10
+shape /Relu_1_output_0 1 16 10 10
+shape /MaxPool_1_output_0 1 16 5 5
+shape /Flatten_output_0 1 400
+shape /fc1/Gemm_output_0 1 120
+shape /Relu_2_output_0 1 120
+shape /fc2/Gemm_output_0 1 84
+shape /Relu_3_output_0 1 84
+shape y 1 10
 end
 model lenet__dynamo.onnx dynamo torch 2.14.1 opset 20
 input x 1 1 28 28
 ops Conv:2 Gemm:3 MaxPool:2 Relu:4 Reshape:1
-expect shape-error (MaxPool): no shape inference rule for this operator yet
+expect compiles
+shape conv2d 1 6 28 28
+shape relu 1 6 28 28
+shape max_pool2d 1 6 14 14
+shape conv2d_1 1 16 10 10
+shape relu_1 1 16 10 10
+shape max_pool2d_1 1 16 5 5
+shape view 1 400
+shape linear 1 120
+shape relu_2 1 120
+shape linear_1 1 84
+shape relu_3 1 84
+shape y 1 10
 end
 model conv_bn__legacy.onnx legacy torch 2.14.1 opset 20
 input x 1 3 32 32

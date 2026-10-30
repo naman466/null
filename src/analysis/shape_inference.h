@@ -44,6 +44,18 @@ struct ConvGeometry {
 ConvGeometry conv_geometry(const Node& node, const std::vector<int64_t>& x,
                            const std::vector<int64_t>& weight);
 
+// the same for a 2-D MaxPool: a window of kh x kw slides over each channel
+// separately, so the output is [N, C, out_h, out_w]
+struct PoolGeometry {
+    int64_t n, c, h, w;              // input  [N, C, H, W]
+    int64_t kh, kw;                  // kernel_shape
+    int64_t stride_h, stride_w, dil_h, dil_w;
+    int64_t pad_top, pad_left, pad_bottom, pad_right;
+    int64_t out_h, out_w;            // output [N, C, out_h, out_w]
+};
+
+PoolGeometry pool_geometry(const Node& node, const std::vector<int64_t>& x);
+
 // infer the type and shape of every live node output, in execution order
 //   - every node input must already have metadata (graph inputs and
 //     initializers do, earlier node outputs get it from this pass)

@@ -194,6 +194,27 @@ TEST(emit_conv) {
     CHECK(contains(emit_c(nb, opt), "null_conv2d_f32(in_x, w_w, NULL, t_y, &"));
 }
 
+TEST(emit_maxpool) {
+    // x[1, 3, 6, 6] -> MaxPool(3x3, stride 2, pads 1, ceil_mode) -> y[1, 3, 4, 4]
+    Graph g("pool");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {1, 3, 6, 6}, DType::FLOAT32));
+    Node pool("pool", OpType::MaxPool, {"x"}, {"y"});
+    pool.add_attr("kernel_shape", std::vector<int64_t>{3, 3});
+    pool.add_attr("strides", std::vector<int64_t>{2, 2});
+    pool.add_attr("pads", std::vector<int64_t>{1, 1, 1, 1});
+    pool.add_attr("ceil_mode", int64_t{1});
+    g.add_node(pool);
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(g, opt);
+    // n c h w, kh kw, strides, dilations, pad top left, out h w
+    CHECK(contains(c, "_pool = {1, 3, 6, 6, 3, 3, 2, 2, 1, 1, 1, 1, 4, 4};"));
+    CHECK(contains(c, "null_maxpool2d_f32(in_x, t_y, &"));
+}
+
 TEST(emit_batched_matmul) {
     Graph g("bmm");
     g.inputs = {"a"};
