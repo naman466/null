@@ -71,3 +71,7 @@ vcpkg_installed/
 Testing/
 .cache/
 
+
+# python environment for tools/crosscheck and the fixture generators
+.venv/
+__pycache__/

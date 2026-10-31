@@ -1,0 +1,12 @@
+# python packages for the cross-checks and the fixture generators, pinned to
+# the versions the recorded fixtures and results were made with
+#   python -m venv .venv
+#   .venv/Scripts/python -m pip install -r tools/crosscheck/requirements.txt
+--extra-index-url https://download.pytorch.org/whl/cpu
+numpy==2.5.3
+onnx==1.23.2
+onnxruntime==1.31.1
+onnxscript==0.7.2
+onnx_ir==1.1.0
+# only for tests/fixtures/pytorch/make_pytorch_fixtures.py
+torch==2.14.1+cpu
