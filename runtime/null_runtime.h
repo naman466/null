@@ -17,5 +17,6 @@
 #include "null/softmax.h"
 #include "null/conv.h"
 #include "null/pool.h"
+#include "null/reduce.h"
 
 #endif /* NULL_RUNTIME_H */

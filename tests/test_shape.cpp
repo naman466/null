@@ -773,6 +773,102 @@ TEST(shape_maxpool_errors) {
     CHECK(contains(shape_error(ints), "must be float32 or float64"));
 }
 
+// TESTS - REDUCTIONS
+
+// ReduceMean with axes as an input (opset 18+), or as an attribute (opset 13-17)
+static Graph reduce_graph(const Shape& x, const std::vector<int64_t>& axes, bool as_input = true) {
+    Graph g = one_node(OpType::ReduceMean, {x});
+    if (as_input) {
+        Tensor t("axes", {static_cast<int64_t>(axes.size())}, DType::INT64);
+        t.set_int64_data(axes);
+        t.shape = {static_cast<int64_t>(axes.size())};
+        g.add_initializer(t);
+        g.nodes[0].inputs.push_back("axes");
+    } else {
+        g.nodes[0].add_attr("axes", axes);
+    }
+    return g;
+}
+
+static Shape reduce_out(Graph g, int64_t keepdims = 1) {
+    g.nodes[0].add_attr("keepdims", keepdims);
+    infer_shapes(g);
+    return info(g, "out0").shape;
+}
+
+TEST(shape_reduce_mean_axes) {
+    // pytorch's adaptive average pool to 1x1: the mean over H and W
+    CHECK_EQ(reduce_out(reduce_graph({1, 16, 32, 32}, {-1, -2})), (Shape{1, 16, 1, 1}));
+    CHECK_EQ(reduce_out(reduce_graph({1, 16, 32, 32}, {-1, -2}), 0), (Shape{1, 16}));
+    CHECK_EQ(reduce_out(reduce_graph({2, 3, 4}, {1}, false)), (Shape{2, 1, 4}));
+    CHECK_EQ(reduce_out(reduce_graph({2, 3, 4}, {0, 2}, false), 0), (Shape{3}));
+    // other dims may be dynamic, reduced ones become 1 either way
+    CHECK_EQ(reduce_out(reduce_graph({-1, 8, -1}, {2})), (Shape{-1, 8, 1}));
+}
+
+TEST(shape_reduce_mean_empty_axes) {
+    // no axes, or empty ones, means every dim...
+    Graph none = one_node(OpType::ReduceMean, {{2, 3, 4}});
+    CHECK_EQ(reduce_out(none), (Shape{1, 1, 1}));
+    CHECK_EQ(reduce_out(none, 0), (Shape{}));
+    CHECK_EQ(reduce_out(reduce_graph({2, 3}, {}), 0), (Shape{}));
+    // ...unless noop_with_empty_axes=1, which passes the input through
+    Graph noop = reduce_graph({2, 3}, {});
+    noop.nodes[0].add_attr("noop_with_empty_axes", int64_t{1});
+    CHECK_EQ(reduce_out(noop, 0), (Shape{2, 3}));
+    CHECK_EQ(reduced_axes(noop.nodes[0], noop), (std::vector<bool>{false, false}));
+    // a scalar reduces to itself
+    CHECK_EQ(reduce_out(one_node(OpType::ReduceMean, {{}}), 0), (Shape{}));
+}
+
+TEST(shape_reduce_mean_reduced_axes) {
+    Graph g = reduce_graph({2, 3, 4, 5}, {-1, 1});
+    infer_shapes(g);
+    CHECK_EQ(reduced_axes(g.nodes[0], g), (std::vector<bool>{false, true, false, true}));
+    Graph gap = one_node(OpType::GlobalAveragePool, {{2, 3, 4, 5}});
+    infer_shapes(gap);
+    CHECK_EQ(reduced_axes(gap.nodes[0], gap), (std::vector<bool>{false, false, true, true}));
+}
+
+TEST(shape_reduce_mean_errors) {
+    Graph range = reduce_graph({2, 3}, {2});
+    CHECK(contains(shape_error(range), "axis 2 is out of range [-2, 1] for rank 2"));
+    Graph twice = reduce_graph({2, 3}, {1, -1});
+    CHECK(contains(shape_error(twice), "axes [1, -1] name dim 1 twice"));
+
+    Graph both = reduce_graph({2, 3}, {1});
+    both.nodes[0].add_attr("axes", std::vector<int64_t>{1});
+    CHECK(contains(shape_error(both), "axes given both as an attribute"));
+
+    Graph runtime = one_node(OpType::ReduceMean, {{2, 3}});
+    runtime.inputs.push_back("axes");
+    runtime.add_value_info(Tensor("axes", {1}, DType::INT64));
+    runtime.nodes[0].inputs.push_back("axes");
+    CHECK(contains(shape_error(runtime), "('axes') must be a constant"));
+
+    Graph matrix = reduce_graph({2, 3}, {0, 1});
+    matrix.value_info.at("axes").shape = {1, 2};
+    CHECK(contains(shape_error(matrix), "axes must be 1-D, got [1, 2]"));
+
+    Graph flags = one_node(OpType::ReduceMean, {{2, 3}}, DType::BOOL);
+    CHECK(contains(shape_error(flags), "must be numeric"));
+}
+
+TEST(shape_global_average_pool) {
+    Graph g = one_node(OpType::GlobalAveragePool, {{1, 16, 32, 32}});
+    infer_shapes(g);
+    CHECK_EQ(info(g, "out0").shape, (Shape{1, 16, 1, 1}));
+    // any number of spatial dims, any of them dynamic
+    Graph g3 = one_node(OpType::GlobalAveragePool, {{-1, 4, 5, -1, 7}});
+    infer_shapes(g3);
+    CHECK_EQ(info(g3, "out0").shape, (Shape{-1, 4, 1, 1, 1}));
+
+    Graph flat = one_node(OpType::GlobalAveragePool, {{1, 16}});
+    CHECK(contains(shape_error(flat), "input must be [N, C, D1, ...], got [1, 16]"));
+    Graph ints = one_node(OpType::GlobalAveragePool, {{1, 3, 8, 8}}, DType::INT64);
+    CHECK(contains(shape_error(ints), "must be float32 or float64"));
+}
+
 // TESTS - SPECIALISING INPUT SHAPES
 
 static Graph dynamic_mlp() {

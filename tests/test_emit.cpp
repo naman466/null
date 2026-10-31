@@ -153,6 +153,7 @@ TEST(emit_embeds_only_the_parts_used) {
     CHECK(!contains(mlp, "runtime/null/conv.h"));
     CHECK(!contains(mlp, "null_conv2d_params"));
     CHECK(!contains(mlp, "runtime/null/pool.h"));
+    CHECK(!contains(mlp, "runtime/null/reduce.h"));
 
     // a lone relu needs only the core and the elementwise part
     Graph g("relu");
@@ -261,6 +262,47 @@ TEST(emit_maxpool) {
     // n c h w, kh kw, strides, dilations, pad top left, out h w
     CHECK(contains(c, "_pool = {1, 3, 6, 6, 3, 3, 2, 2, 1, 1, 1, 1, 4, 4};"));
     CHECK(contains(c, "null_maxpool2d_f32(in_x, t_y, &"));
+}
+
+// x -> op -> y, with optional constant axes for ReduceMean
+static std::string emit_reduce(OpType op, const std::vector<int64_t>& x, const std::vector<int64_t>& axes, int64_t keepdims = 1) {
+    Graph g("reduce");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", x, DType::FLOAT32));
+    Node n("mean", op, {"x"}, {"y"});
+    if (op == OpType::ReduceMean) {
+        Tensor t("axes", {static_cast<int64_t>(axes.size())}, DType::INT64);
+        t.set_int64_data(axes);
+        t.shape = {static_cast<int64_t>(axes.size())};
+        g.add_initializer(t);
+        n.inputs.push_back("axes");
+        n.add_attr("keepdims", keepdims);
+    }
+    g.add_node(n);
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    return emit_c(g, opt);
+}
+
+TEST(emit_reduce_mean) {
+    // the batch of 1 is dropped, C is kept, H and W merge into one reduced dim
+    std::string gap = emit_reduce(OpType::GlobalAveragePool, {1, 16, 8, 8}, {});
+    CHECK(contains(gap, "static const null_reduce_params k0_mean_reduce = {2, {16, 64}, {0, 1}};"));
+    CHECK(contains(gap, "null_reduce_mean_f32(in_x, t_y, &k0_mean_reduce);"));
+    CHECK(contains(gap, "float32[1, 16, 1, 1]"));
+
+    // the same reduction from pytorch's dynamo exporter, keepdims or not
+    std::string rm = emit_reduce(OpType::ReduceMean, {1, 16, 8, 8}, {-1, -2}, 0);
+    CHECK(contains(rm, "= {2, {16, 64}, {0, 1}};"));
+    CHECK(contains(rm, "float32[1, 16]"));
+
+    // alternating dims stay apart; size-1 dims vanish whether reduced or not
+    CHECK(contains(emit_reduce(OpType::ReduceMean, {2, 1, 3, 4, 5}, {0, 1, 3}), "= {4, {2, 3, 4, 5}, {1, 0, 1, 0}};"));
+    // everything reduced is one dim; nothing reduced is a copy
+    CHECK(contains(emit_reduce(OpType::ReduceMean, {2, 3, 4}, {0, 1, 2}), "= {1, {24}, {1}};"));
+    CHECK(contains(emit_reduce(OpType::ReduceMean, {1, 1}, {0}), "= {0, {0}, {0}};"));
 }
 
 TEST(emit_batched_matmul) {

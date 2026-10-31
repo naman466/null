@@ -444,6 +444,67 @@ std::vector<TypeInfo> max_pool(const Context& c) {
     return {{c.in(0).dtype, {x[0], x[1], g.out_h, g.out_w}}};
 }
 
+// RULES - REDUCTION
+
+// the dims a reduction averages away, see reduced_axes in the header
+//   ReduceMean takes axes as an attribute up to opset 17 and as an optional
+//   constant input from opset 18. no axes (or empty ones) means every dim,
+//   unless noop_with_empty_axes=1, which means none
+std::vector<bool> axes_to_reduce(const Context& c) {
+    const int64_t rank = static_cast<int64_t>(c.in(0).shape.size());
+    std::vector<bool> reduce(static_cast<size_t>(rank), false);
+    if (c.node.op == OpType::GlobalAveragePool) {
+        for (size_t i = 2; i < reduce.size(); ++i) reduce[i] = true;
+        return reduce;
+    }
+    std::vector<int64_t> axes;
+    if (c.node.has_attr("axes")) {
+        if (c.has(1))
+            c.fail("axes given both as an attribute (opset 17 and earlier) and as an input (opset 18 and later)");
+        axes = c.node.attr_ints("axes");
+    } else if (c.has(1)) {
+        if (c.in(1).shape.size() != 1) c.fail("axes must be 1-D, got " + c.in(1).shape_str());
+        axes = c.const_ints(1);
+    }
+    if (axes.empty()) {
+        if (c.node.attr_int("noop_with_empty_axes", 0) == 0) reduce.assign(reduce.size(), true);
+        return reduce;
+    }
+    for (int64_t a : axes) {
+        size_t d = static_cast<size_t>(normalize_axis(c, a, rank, 0));
+        if (reduce[d]) c.fail("axes " + shape_of(axes) + " name dim " + std::to_string(d) + " twice");
+        reduce[d] = true;
+    }
+    return reduce;
+}
+
+// ReduceMean(data, axes?) -> reduced, keepdims (default 1) leaves each
+// reduced dim in place as a 1, otherwise it is removed
+std::vector<TypeInfo> reduce_mean(const Context& c) {
+    c.require_inputs(1, 2);
+    c.require_numeric(0);
+    const std::vector<int64_t>& x = c.in(0).shape;
+    std::vector<bool> reduce = axes_to_reduce(c);
+    const bool keepdims = c.node.attr_int("keepdims", 1) != 0;
+    std::vector<int64_t> out;
+    for (size_t i = 0; i < x.size(); ++i) {
+        if (!reduce[i]) out.push_back(x[i]);
+        else if (keepdims) out.push_back(1);
+    }
+    return {{c.in(0).dtype, out}};
+}
+
+// GlobalAveragePool(x) -> y: x [N, C, D1, ...], y [N, C, 1, ...], the mean of
+// each channel
+std::vector<TypeInfo> global_average_pool(const Context& c) {
+    c.require_inputs(1, 1);
+    c.require_float(0);
+    std::vector<int64_t> out = c.in(0).shape;
+    if (out.size() < 3) c.fail("input must be [N, C, D1, ...], got " + c.in(0).shape_str());
+    for (size_t i = 2; i < out.size(); ++i) out[i] = 1;
+    return {{c.in(0).dtype, out}};
+}
+
 const std::unordered_map<OpType, Rule>& rules() {
     static const std::unordered_map<OpType, Rule> table = {
         {OpType::Relu,     unary_numeric},
@@ -471,6 +532,8 @@ const std::unordered_map<OpType, Rule>& rules() {
         {OpType::Softmax,  softmax},
         {OpType::Conv,     conv},
         {OpType::MaxPool,  max_pool},
+        {OpType::GlobalAveragePool, global_average_pool},
+        {OpType::ReduceMean,        reduce_mean},
     };
     return table;
 }
@@ -644,6 +707,10 @@ PoolGeometry pool_geometry(const Node& node, const std::vector<int64_t>& x) {
     g.pad_top = win.pad_top; g.pad_left = win.pad_left; g.pad_bottom = win.pad_bottom; g.pad_right = win.pad_right;
     g.out_h = win.out_h; g.out_w = win.out_w;
     return g;
+}
+
+std::vector<bool> reduced_axes(const Node& node, const Graph& g) {
+    return axes_to_reduce(Context(node, g));
 }
 
 bool has_shape_rule(OpType op) {

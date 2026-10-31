@@ -56,6 +56,11 @@ struct PoolGeometry {
 
 PoolGeometry pool_geometry(const Node& node, const std::vector<int64_t>& x);
 
+// which input dims a ReduceMean or GlobalAveragePool averages away, one flag
+// per input dim (none for a ReduceMean that passes its input through). throws
+// ShapeError naming the node if the axes are invalid or not constant
+std::vector<bool> reduced_axes(const Node& node, const Graph& g);
+
 // infer the type and shape of every live node output, in execution order
 //   - every node input must already have metadata (graph inputs and
 //     initializers do, earlier node outputs get it from this pass)

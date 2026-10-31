@@ -42,6 +42,8 @@ const char* runtime_part(OpType op) {
         case OpType::Softmax: return "softmax";
         case OpType::Conv:    return "conv";
         case OpType::MaxPool: return "pool";
+        case OpType::GlobalAveragePool:
+        case OpType::ReduceMean: return "reduce";
         default:              return nullptr;
     }
 }
@@ -192,6 +194,8 @@ private:
             case OpType::Softmax: emit_softmax(n); break;
             case OpType::Conv:    emit_conv(n); break;
             case OpType::MaxPool: emit_maxpool(n); break;
+            case OpType::GlobalAveragePool:
+            case OpType::ReduceMean: emit_reduce_mean(n); break;
             case OpType::Reshape:
             case OpType::Flatten:
             case OpType::Identity:
@@ -306,6 +310,31 @@ private:
                << g.stride_h << ", " << g.stride_w << ", " << g.dil_h << ", " << g.dil_w << ", "
                << g.pad_top << ", " << g.pad_left << ", " << g.out_h << ", " << g.out_w << "};\n";
         body_ << "    null_maxpool2d_f32(" << x << ", " << y << ", &" << params << ");\n";
+    }
+
+    // size-1 dims are dropped and neighbours that are both kept or both
+    // reduced merged, so a GlobalAveragePool is [N*C kept, H*W reduced]
+    void emit_reduce_mean(const Node& n) {
+        std::string x = read(n, 0), y = write(n, 0);
+        const auto& s = info(n.inputs[0]).shape;
+        std::vector<bool> reduce = reduced_axes(n, g_);
+        std::vector<int64_t> dims, flags;
+        for (size_t i = 0; i < s.size(); ++i) {
+            if (s[i] == 1) continue;
+            if (!flags.empty() && flags.back() == reduce[i]) dims.back() *= s[i];
+            else {
+                dims.push_back(s[i]);
+                flags.push_back(reduce[i]);
+            }
+        }
+        if (dims.size() > NULL_MAX_RANK)
+            fail(where(n) + ": the reduction alternates kept and reduced dims more than " +
+                 std::to_string(NULL_MAX_RANK) + " times");
+        std::string params = temp(n.name + "_reduce");
+        decls_ << "static const null_reduce_params " << params << " = {" << dims.size() << ", {"
+               << (dims.empty() ? "0" : int_list(dims)) << "}, {" << (flags.empty() ? "0" : int_list(flags))
+               << "}};\n";
+        body_ << "    null_reduce_mean_f32(" << x << ", " << y << ", &" << params << ");\n";
     }
 
     void emit_softmax(const Node& n) {
