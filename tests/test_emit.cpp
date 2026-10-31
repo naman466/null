@@ -356,6 +356,57 @@ TEST(emit_shape_chain_is_compile_time_only) {
     CHECK(contains(emit_error(fg), "node 'g' (Gather): no code generation for this operator yet (only for shape values"));
 }
 
+// splits generated C into its comments and the code between them, and checks
+// that each comment is closed by the first */ after it and holds only
+// printable ASCII (and line breaks) with no /* and no ?? inside
+static bool comments_are_clean(const std::string& c, std::string& code) {
+    size_t at = 0;
+    while (true) {
+        size_t open = c.find("/*", at);
+        code += c.substr(at, open == std::string::npos ? std::string::npos : open - at);
+        if (open == std::string::npos) return true;
+        size_t close = c.find("*/", open + 2);
+        if (close == std::string::npos) return false;
+        std::string body = c.substr(open + 2, close - open - 2);
+        if (body.find("/*") != std::string::npos || body.find("??") != std::string::npos) return false;
+        for (char ch : body) {
+            const unsigned char u = static_cast<unsigned char>(ch);
+            if (ch != '\n' && (u < 0x20 || u >= 0x7f)) return false;
+        }
+        at = close + 2;
+    }
+}
+
+TEST(emit_names_cannot_escape_comments) {
+    // every name from the model lands in some comment: graph, input, output,
+    // weight, buffer, node and alias. each tries to end its comment and inject
+    // code, or to break the build another way
+    Graph g("g*/int*from_graph;/*");
+    const std::string x = "x*/int*from_input;/*", w = "w/**/?\?/", h = "h*/\nint*from_buffer;\t/*";
+    const std::string y = "y\xc3\xa9*/int*from_output;/*", flat = "f*//*int*from_alias;";
+    g.inputs = {x};
+    g.outputs = {y};
+    g.add_value_info(Tensor(x, {4}, DType::FLOAT32));
+    Tensor wt(w, {4}, DType::FLOAT32);
+    wt.set_float_data({1, 2, 3, 4});
+    g.add_initializer(wt);
+    g.add_node(Node("*/int*from_node;/*", OpType::Add, {x, w}, {h}));
+    g.add_node(Node("?\?/", OpType::Flatten, {h}, {flat}));
+    g.add_node(Node("r*", OpType::Relu, {flat}, {y}));
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(g, opt), code;
+    CHECK(comments_are_clean(c, code));
+    CHECK(!contains(code, "*from_"));                    // identifiers keep the letters, never the code
+    CHECK(contains(c, "graph 'g* /int*from_graph;/ *'"));
+    CHECK(contains(c, "/* * /int*from_node;/ *: Add */"));
+    CHECK(contains(c, "/* w/ ** /? ?/: float32[4] */"));
+    CHECK(contains(c, "h* /?int*from_buffer;?/ *"));    // line break and tab become '?'
+    CHECK(contains(c, " * output y? ?* /int*from_output;/ *: float32[4, 1]"));   // so do non-ASCII bytes
+    CHECK(contains(c, "/* f* // *int*from_alias; is "));
+}
+
 TEST(emit_batched_matmul) {
     Graph g("bmm");
     g.inputs = {"a"};

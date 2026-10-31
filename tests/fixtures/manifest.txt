@@ -71,3 +71,10 @@ model float16_input.onnx error unsupported data type 10
 end
 model external_data.onnx error external data is not supported
 end
+model hostile_names.onnx ok 14 17 graph*/int*injected_by_the_graph;/*
+input x/*in*/ 1 1 4
+output y*/ 1 1 4
+node Add x/*in*/,w??/ sum*/ -
+node Relu sum*/ y*/ -
+init w??/ 1 2fdb098540cd1c06 4
+end
