@@ -964,7 +964,7 @@ TEST(graph_unnamed_nodes_get_unique_names) {
 TEST(graph_unsupported_ops_listed_together) {
     PbWriter g;
     g.bytes_field(G_NAME, "rnn");
-    g.message_field(G_NODE, node_proto("s", "Shape", {"x"}, {"s"}));
+    g.message_field(G_NODE, node_proto("s", "NonZero", {"x"}, {"s"}));
     g.message_field(G_NODE, node_proto("l1", "LSTM", {"x"}, {"h1"}));
     g.message_field(G_NODE, node_proto("r", "Relu", {"x"}, {"r"}));
     g.message_field(G_NODE, node_proto("l2", "LSTM", {"h1"}, {"h2"}));
@@ -977,7 +977,7 @@ TEST(graph_unsupported_ops_listed_together) {
     std::string msg = graph_error(g);
     CHECK(msg.find("graph 'rnn': unsupported operators: ") != std::string::npos);
     CHECK(msg.find("LSTM (2 nodes)") != std::string::npos);
-    CHECK(msg.find("Shape (1 node)") != std::string::npos);
+    CHECK(msg.find("NonZero (1 node)") != std::string::npos);
     CHECK(msg.find("com.microsoft::Gelu (1 node)") != std::string::npos);
 }
 

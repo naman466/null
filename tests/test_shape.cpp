@@ -3,7 +3,9 @@
 #include "analysis/specialize.h"
 #include "core/graph.h"
 
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace null;
@@ -771,6 +773,215 @@ TEST(shape_maxpool_errors) {
     Graph ints = one_node(OpType::MaxPool, {{1, 3, 8, 8}}, DType::INT64);
     ints.nodes[0].add_attr("kernel_shape", std::vector<int64_t>{2, 2});
     CHECK(contains(shape_error(ints), "must be float32 or float64"));
+}
+
+// TESTS - SHAPES AS VALUES
+
+// an int64 initializer, scalar when shape is {}
+static void add_ints(Graph& g, const std::string& name, const std::vector<int64_t>& values, const Shape& shape) {
+    Tensor t(name, shape, DType::INT64);
+    t.set_int64_data(values);
+    t.shape = shape;
+    g.add_initializer(t);
+}
+
+static std::vector<int64_t> value(const Graph& g, const std::string& name) {
+    std::optional<std::vector<int64_t>> v = computed_value(g, name);
+    if (!v) throw std::runtime_error("no computed value for '" + name + "'");
+    return *v;
+}
+
+TEST(shape_shape_op) {
+    Graph g = one_node(OpType::Shape, {{2, 3, 4}});
+    infer_shapes(g);
+    CHECK_EQ(info(g, "out0").dtype, DType::INT64);
+    CHECK_EQ(info(g, "out0").shape, (Shape{3}));
+    CHECK_EQ(value(g, "out0"), (std::vector<int64_t>{2, 3, 4}));
+
+    // start and end (opset 15) slice the dims, negatives count from the end and are clamped
+    auto sliced = [](int64_t start, int64_t end) {
+        Graph s = one_node(OpType::Shape, {{2, 3, 4}});
+        s.nodes[0].add_attr("start", start);
+        s.nodes[0].add_attr("end", end);
+        infer_shapes(s);
+        return computed_value(s, "out0").value_or(std::vector<int64_t>{-99});
+    };
+    CHECK_EQ(sliced(1, 3), (std::vector<int64_t>{3, 4}));
+    CHECK_EQ(sliced(0, -1), (std::vector<int64_t>{2, 3}));
+    CHECK_EQ(sliced(-10, 10), (std::vector<int64_t>{2, 3, 4}));
+    CHECK_EQ(sliced(2, 1), (std::vector<int64_t>{-99}));     // empty: a value of no elements, nothing to keep
+
+    // a dynamic dim: the shape is known, the value is not complete
+    Graph dyn = one_node(OpType::Shape, {{-1, 784}});
+    infer_shapes(dyn);
+    CHECK_EQ(info(dyn, "out0").shape, (Shape{2}));
+    CHECK(!computed_value(dyn, "out0"));
+}
+
+TEST(shape_gather) {
+    // float data: the indices' dims replace the axis
+    Graph g = one_node(OpType::Gather, {{5, 4, 3}});
+    add_ints(g, "idx", {0, 3}, {2});
+    g.nodes[0].inputs.push_back("idx");
+    g.nodes[0].add_attr("axis", int64_t{1});
+    infer_shapes(g);
+    CHECK_EQ(info(g, "out0").shape, (Shape{5, 2, 3}));
+    CHECK(!computed_value(g, "out0"));                       // float data is never computed
+
+    // a scalar index removes the axis
+    Graph s = one_node(OpType::Gather, {{5, 4, 3}});
+    add_ints(s, "idx", {-1}, {});
+    s.nodes[0].inputs.push_back("idx");
+    infer_shapes(s);
+    CHECK_EQ(info(s, "out0").shape, (Shape{4, 3}));
+
+    Graph range = one_node(OpType::Gather, {{5, 4}});
+    add_ints(range, "idx", {5}, {});
+    range.nodes[0].inputs.push_back("idx");
+    CHECK(contains(shape_error(range), "index 5 is out of range for dim 0 of size 5"));
+    Graph neg = one_node(OpType::Gather, {{5, 4}});
+    add_ints(neg, "idx", {-6}, {});
+    neg.nodes[0].inputs.push_back("idx");
+    CHECK(contains(shape_error(neg), "index -6 is out of range"));
+
+    Graph floats = one_node(OpType::Gather, {{5}, {1}});
+    CHECK(contains(shape_error(floats), "indices must be int32 or int64, got float32"));
+    Graph scalar = one_node(OpType::Gather, {{}, {}}, DType::INT64);
+    CHECK(contains(shape_error(scalar), "data must have rank >= 1"));
+}
+
+TEST(shape_gather_folds_values) {
+    // gather from an int64 matrix along each axis, negative indices included
+    auto gathered = [](int64_t axis, const std::vector<int64_t>& idx, const Shape& idx_shape) {
+        Graph g("g");
+        g.outputs = {"y"};
+        add_ints(g, "data", {1, 2, 3, 4, 5, 6}, {2, 3});
+        add_ints(g, "idx", idx, idx_shape);
+        Node n("gather", OpType::Gather, {"data", "idx"}, {"y"});
+        n.add_attr("axis", axis);
+        g.add_node(n);
+        infer_shapes(g);
+        return std::make_pair(info(g, "y").shape, value(g, "y"));
+    };
+    CHECK_EQ(gathered(0, {1}, {}).second, (std::vector<int64_t>{4, 5, 6}));
+    CHECK_EQ(gathered(1, {2, 0}, {2}), std::make_pair(Shape{2, 2}, std::vector<int64_t>{3, 1, 6, 4}));
+    CHECK_EQ(gathered(-1, {-1}, {1, 1}), std::make_pair(Shape{2, 1, 1}, std::vector<int64_t>{3, 6}));
+}
+
+TEST(shape_unsqueeze_squeeze) {
+    auto with_axes = [](OpType op, const Shape& x, const std::vector<int64_t>& axes) {
+        Graph g = one_node(op, {x});
+        add_ints(g, "axes", axes, {static_cast<int64_t>(axes.size())});
+        g.nodes[0].inputs.push_back("axes");
+        return g;
+    };
+    auto out = [](Graph g) {
+        infer_shapes(g);
+        return info(g, "out0").shape;
+    };
+    // the axes of Unsqueeze count dims of the output
+    CHECK_EQ(out(with_axes(OpType::Unsqueeze, {3, 4}, {0, -1})), (Shape{1, 3, 4, 1}));
+    CHECK_EQ(out(with_axes(OpType::Unsqueeze, {3, 4}, {1})), (Shape{3, 1, 4}));
+    CHECK_EQ(out(with_axes(OpType::Unsqueeze, {}, {0})), (Shape{1}));
+    Graph twice = with_axes(OpType::Unsqueeze, {3}, {0, -3});
+    CHECK(contains(shape_error(twice), "axes [0, -3] name dim 0 twice"));
+    Graph range = with_axes(OpType::Unsqueeze, {3}, {2});
+    CHECK(contains(shape_error(range), "axis 2 is out of range [-2, 1] for rank 2"));
+
+    CHECK_EQ(out(with_axes(OpType::Squeeze, {1, 3, 1}, {0})), (Shape{3, 1}));
+    CHECK_EQ(out(with_axes(OpType::Squeeze, {1, 3, 1}, {-1, 0})), (Shape{3}));
+    CHECK_EQ(out(with_axes(OpType::Squeeze, {-1, 3}, {0})), (Shape{3}));     // a dynamic dim must be 1 at run time
+    CHECK_EQ(out(one_node(OpType::Squeeze, {{1, 3, 1, 2}})), (Shape{3, 2}));  // no axes: every 1
+    Graph not_one = with_axes(OpType::Squeeze, {1, 3}, {1});
+    CHECK(contains(shape_error(not_one), "dim 1 has size 3, only dims of size 1 can be squeezed"));
+    Graph unknown = one_node(OpType::Squeeze, {{-1, 3}});
+    CHECK(contains(shape_error(unknown), "dim 0 is dynamic"));
+
+    Graph runtime = one_node(OpType::Unsqueeze, {{3}, {1}}, DType::INT64);
+    CHECK(contains(shape_error(runtime), "('in1') must be a constant"));
+}
+
+TEST(shape_concat) {
+    auto out = [](const std::vector<Shape>& ins, int64_t axis) {
+        Graph g = one_node(OpType::Concat, ins);
+        g.nodes[0].add_attr("axis", axis);
+        infer_shapes(g);
+        return info(g, "out0").shape;
+    };
+    CHECK_EQ(out({{2, 3}, {2, 5}}, 1), (Shape{2, 8}));
+    CHECK_EQ(out({{2, 3}, {4, 3}, {1, 3}}, -2), (Shape{7, 3}));
+    CHECK_EQ(out({{4}}, 0), (Shape{4}));
+    // a dynamic dim along the axis makes the sum dynamic; elsewhere a known size fills it
+    CHECK_EQ(out({{-1, 3}, {2, -1}}, 0), (Shape{-1, 3}));
+    CHECK_EQ(out({{-1, 3}, {2, -1}}, 1), (Shape{2, -1}));
+
+    Graph mismatch = one_node(OpType::Concat, {{2, 3}, {3, 3}});
+    mismatch.nodes[0].add_attr("axis", int64_t{1});
+    CHECK(contains(shape_error(mismatch), "input 1 has size 3 in dim 0, the others 2"));
+    Graph rank = one_node(OpType::Concat, {{2, 3}, {6}});
+    rank.nodes[0].add_attr("axis", int64_t{0});
+    CHECK(contains(shape_error(rank), "input 1 has rank 1, input 0 has rank 2"));
+    Graph no_axis = one_node(OpType::Concat, {{2}, {3}});
+    CHECK(contains(shape_error(no_axis), "axis is required"));
+
+    // int64 values concatenate, here along the second axis of two matrices
+    Graph v("v");
+    v.outputs = {"y"};
+    add_ints(v, "a", {1, 2, 3, 4}, {2, 2});
+    add_ints(v, "b", {9, 8}, {2, 1});
+    Node n("cat", OpType::Concat, {"a", "b"}, {"y"});
+    n.add_attr("axis", int64_t{1});
+    v.add_node(n);
+    infer_shapes(v);
+    CHECK_EQ(value(v, "y"), (std::vector<int64_t>{1, 2, 9, 3, 4, 8}));
+}
+
+// x[?, 1, 28, 28] -> Shape -> Gather(0) -> Unsqueeze(0) -> Concat with [-1] -> Reshape,
+// what PyTorch's legacy exporter writes for x.view(x.size(0), -1)
+static Graph view_chain() {
+    Graph g("view");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {-1, 1, 28, 28}, DType::FLOAT32));
+    add_ints(g, "zero", {0}, {});
+    add_ints(g, "axes", {0}, {1});
+    add_ints(g, "rest", {-1}, {1});
+    g.add_node(Node("shape", OpType::Shape, {"x"}, {"s"}));
+    Node gather("gather", OpType::Gather, {"s", "zero"}, {"batch"});
+    gather.add_attr("axis", int64_t{0});
+    g.add_node(gather);
+    g.add_node(Node("unsqueeze", OpType::Unsqueeze, {"batch", "axes"}, {"batch1"}));
+    Node cat("concat", OpType::Concat, {"batch1", "rest"}, {"target"});
+    cat.add_attr("axis", int64_t{0});
+    g.add_node(cat);
+    g.add_node(Node("reshape", OpType::Reshape, {"x", "target"}, {"y"}));
+    return g;
+}
+
+TEST(shape_chain_folds_once_the_batch_is_fixed) {
+    Graph g = view_chain();
+    infer_shapes(g);
+    // with the batch dynamic the target's first entry is unknown: a dynamic dim, not an error
+    CHECK_EQ(info(g, "y").shape, (Shape{-1, -1}));
+    CHECK(!computed_value(g, "target"));
+
+    set_batch_size(g, 1);
+    infer_shapes(g);
+    CHECK_EQ(value(g, "s"), (std::vector<int64_t>{1, 1, 28, 28}));
+    CHECK_EQ(value(g, "batch"), (std::vector<int64_t>{1}));
+    CHECK_EQ(info(g, "batch").shape, (Shape{}));
+    CHECK_EQ(value(g, "target"), (std::vector<int64_t>{1, -1}));
+    CHECK_EQ(info(g, "y").shape, (Shape{1, 784}));
+    CHECK(!computed_value(g, "zero"));                       // initializers are not "computed"
+}
+
+TEST(shape_value_from_a_dynamic_dim_must_be_known_when_required) {
+    // Unsqueeze's axes must be fully known: here they come from a dynamic dim
+    Graph g = view_chain();
+    g.add_value_info(Tensor("z", {3}, DType::FLOAT32));
+    g.inputs.push_back("z");
+    g.add_node(Node("bad", OpType::Unsqueeze, {"z", "batch1"}, {"w"}));
+    CHECK(contains(shape_error(g), "node 'bad' (Unsqueeze): input 1 ('batch1') depends on a dynamic dim"));
 }
 
 // TESTS - REDUCTIONS

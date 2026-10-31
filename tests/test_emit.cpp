@@ -305,6 +305,57 @@ TEST(emit_reduce_mean) {
     CHECK(contains(emit_reduce(OpType::ReduceMean, {1, 1}, {0}), "= {0, {0}, {0}};"));
 }
 
+TEST(emit_shape_chain_is_compile_time_only) {
+    // x[1, 12] -> Shape -> Gather(0) -> Unsqueeze(0) -> Concat with [-1] -> Reshape -> Relu,
+    // then Unsqueeze on the float result
+    Graph g("view");
+    g.inputs = {"x"};
+    g.outputs = {"z"};
+    g.add_value_info(Tensor("x", {1, 12}, DType::FLOAT32));
+    auto ints = [&](const std::string& name, const std::vector<int64_t>& v, const std::vector<int64_t>& shape) {
+        Tensor t(name, shape, DType::INT64);
+        t.set_int64_data(v);
+        t.shape = shape;
+        g.add_initializer(t);
+    };
+    ints("zero", {0}, {});
+    ints("axes", {0}, {1});
+    ints("rest", {-1}, {1});
+    g.add_node(Node("shape", OpType::Shape, {"x"}, {"s"}));
+    g.add_node(Node("gather", OpType::Gather, {"s", "zero"}, {"batch"}));
+    g.add_node(Node("unsq", OpType::Unsqueeze, {"batch", "axes"}, {"batch1"}));
+    Node cat("concat", OpType::Concat, {"batch1", "rest"}, {"target"});
+    cat.add_attr("axis", int64_t{0});
+    g.add_node(cat);
+    g.add_node(Node("reshape", OpType::Reshape, {"x", "target"}, {"flat"}));
+    g.add_node(Node("relu", OpType::Relu, {"flat"}, {"y"}));
+    g.add_node(Node("lift", OpType::Unsqueeze, {"y", "axes"}, {"z"}));
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(g, opt);
+    CHECK(contains(c, "/* s = [1, 12], computed at compile time */"));
+    CHECK(contains(c, "/* batch = [1], computed at compile time */"));
+    CHECK(contains(c, "/* target = [1, -1], computed at compile time */"));
+    CHECK(contains(c, "/* flat is in_x, no data moves */"));
+    CHECK(contains(c, "null_relu_f32(in_x, t_y, 12);"));
+    CHECK(contains(c, "/* z is t_y, no data moves */"));            // a float Unsqueeze is an alias
+    CHECK(contains(c, " * output z: float32[1, 1, 12]"));
+
+    // a Gather of float data has no kernel yet
+    Graph fg("gather");
+    fg.inputs = {"x"};
+    fg.outputs = {"y"};
+    fg.add_value_info(Tensor("x", {4, 3}, DType::FLOAT32));
+    Tensor idx("idx", {}, DType::INT64);
+    idx.set_int64_data({1});
+    idx.shape = {};
+    fg.add_initializer(idx);
+    fg.add_node(Node("g", OpType::Gather, {"x", "idx"}, {"y"}));
+    infer_shapes(fg);
+    CHECK(contains(emit_error(fg), "node 'g' (Gather): no code generation for this operator yet (only for shape values"));
+}
+
 TEST(emit_batched_matmul) {
     Graph g("bmm");
     g.inputs = {"a"};

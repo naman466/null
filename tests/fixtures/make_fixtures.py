@@ -158,7 +158,7 @@ error("unsupported_ops.onnx", model(helper.make_graph(
      mk("LSTM", ["h", "w", "r"], ["y"], hidden_size=4)],
     "rnn", [vi("x", F, [1, 1, 4])], [vi("y", F, [1, 1, 1, 4]), vi("s", TensorProto.INT64, [3])],
     initializer=[weights("w", (1, 16, 4)), weights("r", (1, 16, 4))])),
-    "unsupported operators: LSTM (2 nodes), Shape (1 node)")
+    "unsupported operators: LSTM (2 nodes)")
 
 error("float16_input.onnx", model(helper.make_graph(
     [mk("Relu", ["x"], ["y"])], "half",

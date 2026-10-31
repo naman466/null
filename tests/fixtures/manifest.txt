@@ -65,7 +65,7 @@ init B 1 18c8789fbd782109 2
 end
 model opset11.onnx error opset 11 is not supported
 end
-model unsupported_ops.onnx error unsupported operators: LSTM (2 nodes), Shape (1 node)
+model unsupported_ops.onnx error unsupported operators: LSTM (2 nodes)
 end
 model float16_input.onnx error unsupported data type 10
 end

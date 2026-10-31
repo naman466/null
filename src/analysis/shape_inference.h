@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -66,7 +67,13 @@ std::vector<bool> reduced_axes(const Node& node, const Graph& g);
 //     initializers do, earlier node outputs get it from this pass)
 //   - an output the model already declared is checked against the inferred
 //     result: a conflict throws, a known declared dim refines an inferred -1
+//   - small int64 tensors whose values can be computed now (Shape, and the
+//     Gather / Unsqueeze / Squeeze / Concat built on it) get those values as
+//     their value_info data, so Reshape targets made from them are constants
 // throws ShapeError naming the node on any failure
 void infer_shapes(Graph& g);
+
+// the value infer_shapes computed for a tensor, if it did (never an initializer)
+std::optional<std::vector<int64_t>> computed_value(const Graph& g, const std::string& name);
 
 } // namespace null

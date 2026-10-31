@@ -8,5 +8,9 @@ onnx==1.23.2
 onnxruntime==1.31.1
 onnxscript==0.7.2
 onnx_ir==1.1.0
-# only for tests/fixtures/pytorch/make_pytorch_fixtures.py
+# only for tests/fixtures/pytorch/make_pytorch_fixtures.py (torchvision was in the
+# environment the fixtures were made in). the newer exporter writes each node's
+# python stack trace into the file, with the environment's absolute path, so
+# re-exporting from another folder changes those strings and nothing else
 torch==2.14.1+cpu
+torchvision==0.29.1+cpu

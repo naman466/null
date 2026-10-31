@@ -33,7 +33,19 @@ end
 model mlp_view__legacy_dyn.onnx legacy torch 2.14.1 opset 20
 input x -1 1 28 28
 ops Concat:1 Constant:3 Gather:1 Gemm:2 Relu:1 Reshape:1 Shape:1 Softmax:1 Unsqueeze:1
-expect load-error unsupported operators: Shape (1 node)
+expect compiles
+shape /Shape_output_0 4
+shape /Constant_output_0
+shape /Gather_output_0
+shape onnx::Unsqueeze_9 1
+shape /Unsqueeze_output_0 1
+shape /Constant_1_output_0 1
+shape /Concat_output_0 2
+shape /Reshape_output_0 1 784
+shape /fc1/Gemm_output_0 1 32
+shape /Relu_output_0 1 32
+shape /fc2/Gemm_output_0 1 10
+shape y 1 10
 end
 model lenet__legacy.onnx legacy torch 2.14.1 opset 20
 input x 1 1 28 28

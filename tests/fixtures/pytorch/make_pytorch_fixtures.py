@@ -89,7 +89,7 @@ FIXTURES = [
     ("mlp__legacy_dyn.onnx",      MLP,     (1, 1, 28, 28), "legacy", True,  ("compiles", "")),
     ("mlp__dynamo_dyn.onnx",      MLP,     (1, 1, 28, 28), "dynamo", True,  ("compiles", "")),
     ("mlp_view__legacy.onnx",     MLPView, (1, 1, 28, 28), "legacy", False, ("compiles", "")),
-    ("mlp_view__legacy_dyn.onnx", MLPView, (1, 1, 28, 28), "legacy", True,  ("load-error", "unsupported operators: Shape (1 node)")),
+    ("mlp_view__legacy_dyn.onnx", MLPView, (1, 1, 28, 28), "legacy", True,  ("compiles", "")),
     ("lenet__legacy.onnx",        LeNet,   (1, 1, 28, 28), "legacy", False, ("compiles", "")),
     ("lenet__dynamo.onnx",        LeNet,   (1, 1, 28, 28), "dynamo", False, ("compiles", "")),
     ("conv_bn__legacy.onnx",      ConvBN,  (1, 3, 32, 32), "legacy", False, ("compiles", "")),
@@ -135,7 +135,7 @@ for fname, factory, shape, exporter, dynamic, (kind, text) in FIXTURES:
             if d.WhichOneof("value") != "dim_value":
                 d.ClearField("dim_param")
                 d.dim_value = 1
-        inferred = shape_inference.infer_shapes(m, strict_mode=True)
+        inferred = shape_inference.infer_shapes(m, strict_mode=True, data_prop=True)   # folds Shape chains, as null does
         known = {vi.name: dims_of(vi) for vi in list(inferred.graph.value_info) + list(inferred.graph.output)}
         for node in m.graph.node:
             for out in node.output:

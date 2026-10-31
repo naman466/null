@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -134,7 +135,21 @@ inline std::string dump_graph(const Graph& g) {
         for (size_t k = 0; k < n.outputs.size(); ++k) {
             const std::string& o = n.outputs[k];
             out << (k ? ", " : "") << (o.empty() ? "_" : o);
-            if (const Tensor* t = o.empty() ? nullptr : g.get_tensor_info(o)) out << ": " << type_str(*t);
+            if (const Tensor* t = o.empty() ? nullptr : g.get_tensor_info(o)) {
+                out << ": " << type_str(*t);
+                // a value shape inference computed, like a folded Reshape target
+                if (t->dtype == DType::INT64 && !t->data.empty() && !g.is_initializer(o)) {
+                    std::vector<int64_t> v(t->data.size() / sizeof(int64_t));
+                    std::memcpy(v.data(), t->data.data(), t->data.size());
+                    if (t->shape.empty()) {
+                        out << " = " << v[0];          // a scalar
+                    } else {
+                        out << " = [";
+                        for (size_t k = 0; k < v.size(); ++k) out << (k ? ", " : "") << v[k];
+                        out << "]";
+                    }
+                }
+            }
         }
         if (!n.attrs.empty()) {
             std::vector<std::string> keys;

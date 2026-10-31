@@ -1,10 +1,12 @@
 #include "backend/emit_c.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -205,9 +207,34 @@ private:
             case OpType::Constant:
                 emit_constant_node(n);
                 break;
+            case OpType::Shape:
+            case OpType::Gather:
+            case OpType::Concat:
+            case OpType::Unsqueeze:
+            case OpType::Squeeze:
+                if (emit_computed(n)) break;
+                if (n.op == OpType::Unsqueeze || n.op == OpType::Squeeze) {
+                    emit_alias(n);
+                    break;
+                }
+                fail(where(n) + ": no code generation for this operator yet (only for shape values "
+                     "known at compile time)");
             default:
                 fail(where(n) + ": no code generation for this operator yet");
         }
+    }
+
+    // an int64 output whose value shape inference computed, like a Reshape
+    // target built from Shape: it exists only at compile time, so no code
+    bool emit_computed(const Node& n) {
+        const std::string& out = n.outputs.at(0);
+        if (info(out).dtype != DType::INT64) return false;
+        std::optional<std::vector<int64_t>> v = computed_value(g_, out);
+        if (!v && info(out).num_elements() != 0) return false;
+        std::string shown = v ? int_list(std::vector<int64_t>(v->begin(), v->begin() + std::min<size_t>(v->size(), 8))) : "";
+        if (v && v->size() > 8) shown += ", ...";
+        body_ << "    /* " << out << " = [" << shown << "], computed at compile time */\n";
+        return true;
     }
 
     // same bytes, new shape: the output is another name for the input

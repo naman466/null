@@ -77,7 +77,7 @@ enum class OpType {
     // normalization
     BatchNormalization,
     // shape
-    Reshape, Flatten, Transpose, Squeeze, Unsqueeze,
+    Reshape, Flatten, Transpose, Squeeze, Unsqueeze, Shape,
     // elementwise
     Exp, Log, Sqrt, Abs, Neg, Pow,
     // reduction
@@ -118,6 +118,7 @@ inline std::string optype_to_str(OpType op) {
         case OpType::Transpose:         return "Transpose";
         case OpType::Squeeze:           return "Squeeze";
         case OpType::Unsqueeze:         return "Unsqueeze";
+        case OpType::Shape:             return "Shape";
         case OpType::Exp:               return "Exp";
         case OpType::Log:               return "Log";
         case OpType::Sqrt:              return "Sqrt";
@@ -162,6 +163,7 @@ inline OpType str_to_optype(const std::string& s) {
     if (s == "Transpose")         return OpType::Transpose;
     if (s == "Squeeze")           return OpType::Squeeze;
     if (s == "Unsqueeze")         return OpType::Unsqueeze;
+    if (s == "Shape")             return OpType::Shape;
     if (s == "Exp")               return OpType::Exp;
     if (s == "Log")               return OpType::Log;
     if (s == "Sqrt")              return OpType::Sqrt;

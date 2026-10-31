@@ -1,16 +1,32 @@
 #include "analysis/shape_inference.h"
 
 #include <algorithm>
+#include <cstring>
+#include <optional>
 #include <unordered_map>
 
 namespace null {
 
 namespace {
 
+// the elements of a small int64 tensor known at compile time, row-major. an
+// element is nullopt where it depends on a dynamic dim: Shape of [?, 784] is
+// {nullopt, 784}, and becomes {1, 784} once --batch 1 fixes the dim
+using Value = std::vector<std::optional<int64_t>>;
+
+// values are computed for shape arithmetic, never for weights: larger results
+// are left unknown
+constexpr int64_t kMaxValueElements = 4096;
+
 // result of a shape rule for one output
 struct TypeInfo {
     DType dtype = DType::UNDEFINED;
     std::vector<int64_t> shape;
+    std::optional<Value> value;     // only for int64 outputs computed at compile time
+
+    TypeInfo() = default;
+    TypeInfo(DType d, std::vector<int64_t> s, std::optional<Value> v = std::nullopt)
+        : dtype(d), shape(std::move(s)), value(std::move(v)) {}
 };
 
 std::string where(const Node& n) {
@@ -20,7 +36,9 @@ std::string where(const Node& n) {
 // everything a rule needs about one node
 class Context {
 public:
-    Context(const Node& n, const Graph& g) : node(n), graph_(g) {
+    // values: the partly known values computed so far in this pass, if any
+    Context(const Node& n, const Graph& g, const std::unordered_map<std::string, Value>* values = nullptr)
+        : node(n), graph_(g), values_(values) {
         for (const std::string& name : n.inputs) {
             if (name.empty()) {          // omitted optional input
                 inputs_.push_back(nullptr);
@@ -79,37 +97,63 @@ public:
             fail("input " + std::to_string(i) + " must be a scalar, got shape " + in(i).shape_str());
     }
 
-    // values of an int64 input that must be known at compile time, from an
-    // initializer or a Constant node (value, value_int or value_ints)
-    std::vector<int64_t> const_ints(size_t i) const {
-        const std::string& name = node.inputs.at(i);
+    // the value of an int64 input known at compile time: an initializer, a
+    // Constant node (value, value_int or value_ints), or a value shape
+    // inference computed, like the output of Shape and what is built from it.
+    // nullopt if the input has none (a graph input, an int32 tensor, ...)
+    std::optional<Value> value_of(size_t i) const {
+        if (!has(i)) return std::nullopt;
+        const std::string& name = node.inputs[i];
+        auto ints = [](const std::vector<int64_t>& v) { return Value(v.begin(), v.end()); };
         const Tensor* t = nullptr;
         if (auto it = graph_.initializers.find(name); it != graph_.initializers.end()) {
             t = &it->second;
-        } else {
-            for (const Node& n : graph_.nodes) {
-                if (n.is_dead || n.op != OpType::Constant || n.outputs.empty() || n.outputs[0] != name)
-                    continue;
-                if (n.has_attr("value_ints")) return n.attr_ints("value_ints");
-                if (n.has_attr("value_int"))  return {n.attr_int("value_int")};
-                if (n.has_attr("value"))      t = &n.get_attr("value").as_tensor();
-                break;
-            }
+        } else if (const Node* n = constant_node(name)) {
+            if (n->has_attr("value_ints")) return ints(n->attr_ints("value_ints"));
+            if (n->has_attr("value_int"))  return ints({n->attr_int("value_int")});
+            if (n->has_attr("value"))      t = &n->get_attr("value").as_tensor();
+        } else if (values_ && values_->count(name)) {
+            return values_->at(name);
+        } else if (!inputs_[i]->data.empty()) {
+            t = inputs_[i];                 // computed by an earlier pass and kept with the tensor
         }
-        if (!t)
+        if (!t || t->dtype != DType::INT64) return std::nullopt;
+        int64_t n = t->num_elements();
+        if (n <= 0) return Value{};
+        return ints(std::vector<int64_t>(t->int64_ptr(), t->int64_ptr() + n));
+    }
+
+    // the value of an int64 input that must be fully known at compile time
+    std::vector<int64_t> const_ints(size_t i) const {
+        const std::string& name = node.inputs.at(i);
+        std::optional<Value> v = value_of(i);
+        if (!v) {
+            if (in(i).dtype != DType::INT64)
+                fail("input " + std::to_string(i) + " ('" + name + "') must be int64, got " +
+                     dtype_name(in(i).dtype));
             fail("input " + std::to_string(i) + " ('" + name + "') must be a constant "
                  "(an initializer or Constant node), shapes computed at run time are not supported");
-        if (t->dtype != DType::INT64)
-            fail("input " + std::to_string(i) + " ('" + name + "') must be int64, got " +
-                 dtype_name(t->dtype));
-        int64_t n = t->num_elements();
-        if (n == 0) return {};
-        return std::vector<int64_t>(t->int64_ptr(), t->int64_ptr() + n);
+        }
+        std::vector<int64_t> out;
+        for (const std::optional<int64_t>& e : *v) {
+            if (!e)
+                fail("input " + std::to_string(i) + " ('" + name + "') depends on a dynamic dim, fix the "
+                     "input shapes with --batch or --input-shape");
+            out.push_back(*e);
+        }
+        return out;
     }
 
 private:
+    const Node* constant_node(const std::string& name) const {
+        for (const Node& n : graph_.nodes)
+            if (!n.is_dead && n.op == OpType::Constant && !n.outputs.empty() && n.outputs[0] == name) return &n;
+        return nullptr;
+    }
+
     std::vector<const Tensor*> inputs_;
     const Graph& graph_;
+    const std::unordered_map<std::string, Value>* values_;
 };
 
 using Rule = std::vector<TypeInfo> (*)(const Context&);
@@ -323,22 +367,29 @@ int64_t normalize_axis(const Context& c, int64_t axis, int64_t rank, int64_t ext
     return axis < 0 ? axis + rank : axis;
 }
 
-// Reshape(data, shape), the target shape must be a constant
+// Reshape(data, shape), the target shape must be known at compile time
 //   0 copies the input dim at the same position (unless allowzero=1, then
-//   it means an empty dim), -1 is inferred from the element count
+//   it means an empty dim), -1 is inferred from the element count. an entry
+//   computed from a dynamic dim (Shape of the input, with the batch not yet
+//   fixed) gives a dynamic output dim
 std::vector<TypeInfo> reshape(const Context& c) {
     c.require_inputs(2, 2);
     const std::vector<int64_t>& in = c.in(0).shape;
-    std::vector<int64_t> target = c.const_ints(1);
+    std::optional<Value> value = c.value_of(1);
+    if (!value) c.const_ints(1);       // fails, saying why
     if (c.in(1).shape.size() != 1) c.fail("shape input must be 1-D, got " + c.in(1).shape_str());
     const bool allowzero = c.node.attr_int("allowzero", 0) != 0;
+    std::vector<int64_t> target;
+    for (const std::optional<int64_t>& e : *value) target.push_back(e ? *e : 1);   // 1: a placeholder
 
     std::vector<int64_t> out(target.size());
     std::vector<bool> copied(in.size(), false);   // input dims carried over by a 0
     int infer_at = -1;
     for (size_t i = 0; i < target.size(); ++i) {
         int64_t t = target[i];
-        if (t == -1) {
+        if (!(*value)[i]) {
+            out[i] = -1;                    // known once the dynamic dims are fixed
+        } else if (t == -1) {
             if (infer_at >= 0) c.fail("shape " + shape_of(target) + " has more than one -1");
             infer_at = static_cast<int>(i);
             out[i] = -1;
@@ -405,6 +456,170 @@ std::vector<TypeInfo> softmax(const Context& c) {
     if (rank == 0) c.fail("input must have rank >= 1, got a scalar");
     normalize_axis(c, c.node.attr_int("axis", -1), rank, 0);
     return {{c.in(0).dtype, c.in(0).shape}};
+}
+
+// RULES - SHAPES AS VALUES
+//
+// Shape turns a tensor's dims into an int64 tensor, and exporters build
+// Reshape targets from it with Gather, Unsqueeze, Squeeze and Concat. Each of
+// these also computes its output's value when its inputs' values are known,
+// so the whole chain is a constant by the time it reaches the Reshape.
+
+// Shape(data) -> int64 [end - start]: the dims from start (default 0) to end
+// (default rank), each clamped to [0, rank] after adding rank to a negative
+std::vector<TypeInfo> shape_rule(const Context& c) {
+    c.require_inputs(1, 1);
+    const std::vector<int64_t>& x = c.in(0).shape;
+    const int64_t rank = static_cast<int64_t>(x.size());
+    auto clamp = [&](int64_t v) { return std::clamp<int64_t>(v < 0 ? v + rank : v, 0, rank); };
+    const int64_t start = clamp(c.node.attr_int("start", 0)), end = clamp(c.node.attr_int("end", rank));
+    Value v;
+    for (int64_t d = start; d < end; ++d) {
+        int64_t dim = x[static_cast<size_t>(d)];
+        v.push_back(dim >= 0 ? std::optional<int64_t>(dim) : std::nullopt);
+    }
+    return {{DType::INT64, {static_cast<int64_t>(v.size())}, v}};
+}
+
+// Gather(data, indices) along axis (default 0): data's dims before the axis,
+// then the indices' dims, then data's dims after the axis
+std::vector<TypeInfo> gather(const Context& c) {
+    c.require_inputs(2, 2);
+    if (c.in(1).dtype != DType::INT64 && c.in(1).dtype != DType::INT32)
+        c.fail("indices must be int32 or int64, got " + dtype_name(c.in(1).dtype));
+    const std::vector<int64_t>& x = c.in(0).shape;
+    const std::vector<int64_t>& idx = c.in(1).shape;
+    const int64_t rank = static_cast<int64_t>(x.size());
+    if (rank == 0) c.fail("data must have rank >= 1, got a scalar");
+    const size_t axis = static_cast<size_t>(normalize_axis(c, c.node.attr_int("axis", 0), rank, 0));
+    std::vector<int64_t> out(x.begin(), x.begin() + static_cast<std::ptrdiff_t>(axis));
+    out.insert(out.end(), idx.begin(), idx.end());
+    out.insert(out.end(), x.begin() + static_cast<std::ptrdiff_t>(axis) + 1, x.end());
+    TypeInfo result{c.in(0).dtype, out, std::nullopt};
+
+    // constant indices are range-checked now, and with data's value, folded
+    std::optional<Value> indices = c.value_of(1);
+    const int64_t n = x[axis];
+    if (!indices || n < 0) return {result};
+    std::vector<int64_t> pos;
+    for (const std::optional<int64_t>& e : *indices) {
+        if (!e) return {result};
+        if (*e < -n || *e >= n)
+            c.fail("index " + std::to_string(*e) + " is out of range for dim " + std::to_string(axis) +
+                   " of size " + std::to_string(n));
+        pos.push_back(*e < 0 ? *e + n : *e);
+    }
+    std::optional<Value> data = c.value_of(0);
+    const int64_t outer = product(x, 0, axis), inner = product(x, axis + 1, x.size());
+    if (!data || outer < 0 || inner < 0) return {result};
+    Value v;
+    for (int64_t o = 0; o < outer; ++o)
+        for (int64_t p : pos)
+            for (int64_t i = 0; i < inner; ++i) v.push_back((*data)[static_cast<size_t>((o * n + p) * inner + i)]);
+    result.value = v;
+    return {result};
+}
+
+// the axes input of Unsqueeze and Squeeze (opset 13+), normalised for a rank
+std::vector<bool> axes_input(const Context& c, int64_t rank) {
+    if (c.in(1).shape.size() != 1) c.fail("axes must be 1-D, got " + c.in(1).shape_str());
+    std::vector<int64_t> axes = c.const_ints(1);
+    std::vector<bool> marked(static_cast<size_t>(rank), false);
+    for (int64_t a : axes) {
+        size_t d = static_cast<size_t>(normalize_axis(c, a, rank, 0));
+        if (marked[d]) c.fail("axes " + shape_of(axes) + " name dim " + std::to_string(d) + " twice");
+        marked[d] = true;
+    }
+    return marked;
+}
+
+// Unsqueeze(data, axes): a 1 inserted at each axis, the axes counting dims of
+// the output, whose rank is the input's plus the number of axes
+std::vector<TypeInfo> unsqueeze(const Context& c) {
+    c.require_inputs(2, 2);
+    const std::vector<int64_t>& x = c.in(0).shape;
+    if (c.in(1).num_elements() < 0) c.fail("axes must have a static shape, got " + c.in(1).shape_str());
+    const int64_t rank = static_cast<int64_t>(x.size()) + c.in(1).num_elements();
+    std::vector<bool> inserted = axes_input(c, rank);
+    std::vector<int64_t> out;
+    size_t next = 0;
+    for (bool one : inserted) out.push_back(one ? 1 : x[next++]);
+    return {{c.in(0).dtype, out, c.value_of(0)}};
+}
+
+// Squeeze(data, axes?): the given dims removed, each of which must be 1, or
+// without axes every dim of size 1
+std::vector<TypeInfo> squeeze(const Context& c) {
+    c.require_inputs(1, 2);
+    const std::vector<int64_t>& x = c.in(0).shape;
+    const int64_t rank = static_cast<int64_t>(x.size());
+    std::vector<bool> removed(x.size(), false);
+    if (c.has(1)) {
+        removed = axes_input(c, rank);
+        for (size_t d = 0; d < x.size(); ++d)
+            if (removed[d] && x[d] >= 0 && x[d] != 1)     // a dynamic dim must turn out to be 1
+                c.fail("dim " + std::to_string(d) + " has size " + std::to_string(x[d]) +
+                       ", only dims of size 1 can be squeezed");
+    } else {
+        for (size_t d = 0; d < x.size(); ++d) {
+            if (x[d] < 0)
+                c.fail("dim " + std::to_string(d) + " is dynamic, so whether Squeeze without axes removes it "
+                       "is unknown; fix the input shapes with --batch or --input-shape");
+            removed[d] = x[d] == 1;
+        }
+    }
+    std::vector<int64_t> out;
+    for (size_t d = 0; d < x.size(); ++d)
+        if (!removed[d]) out.push_back(x[d]);
+    return {{c.in(0).dtype, out, c.value_of(0)}};
+}
+
+// Concat(inputs...) along axis: the same type and rank, the same dims except
+// along the axis, where they add up
+std::vector<TypeInfo> concat(const Context& c) {
+    if (c.num_inputs() == 0) c.fail("expects at least 1 input");
+    if (!c.node.has_attr("axis")) c.fail("axis is required");
+    std::vector<int64_t> out = c.in(0).shape;
+    const int64_t rank = static_cast<int64_t>(out.size());
+    if (rank == 0) c.fail("inputs must have rank >= 1, got a scalar");
+    const size_t axis = static_cast<size_t>(normalize_axis(c, c.node.attr_int("axis"), rank, 0));
+    for (size_t i = 1; i < c.num_inputs(); ++i) {
+        c.require_same_dtype(0, i);
+        const std::vector<int64_t>& s = c.in(i).shape;
+        if (s.size() != out.size())
+            c.fail("input " + std::to_string(i) + " has rank " + std::to_string(s.size()) +
+                   ", input 0 has rank " + std::to_string(rank));
+        for (size_t d = 0; d < out.size(); ++d) {
+            if (d == axis) {
+                out[d] = out[d] < 0 || s[d] < 0 ? -1 : out[d] + s[d];
+            } else if (out[d] < 0) {
+                out[d] = s[d];
+            } else if (s[d] >= 0 && s[d] != out[d]) {
+                c.fail("input " + std::to_string(i) + " has size " + std::to_string(s[d]) + " in dim " +
+                       std::to_string(d) + ", the others " + std::to_string(out[d]));
+            }
+        }
+    }
+
+    // the value, if every input has one: for each slice before the axis, each
+    // input's block in turn
+    TypeInfo result{c.in(0).dtype, out, std::nullopt};
+    const int64_t outer = product(out, 0, axis), inner = product(out, axis + 1, out.size());
+    if (outer < 0 || inner < 0) return {result};
+    std::vector<Value> values;
+    for (size_t i = 0; i < c.num_inputs(); ++i) {
+        std::optional<Value> v = c.value_of(i);
+        if (!v || c.in(i).shape[axis] < 0) return {result};
+        values.push_back(*v);
+    }
+    Value v;
+    for (int64_t o = 0; o < outer; ++o)
+        for (size_t i = 0; i < values.size(); ++i) {
+            const int64_t block = c.in(i).shape[axis] * inner;
+            for (int64_t k = 0; k < block; ++k) v.push_back(values[i][static_cast<size_t>(o * block + k)]);
+        }
+    result.value = v;
+    return {result};
 }
 
 // RULES - CONVOLUTION
@@ -530,6 +745,11 @@ const std::unordered_map<OpType, Rule>& rules() {
         {OpType::Reshape,  reshape},
         {OpType::Flatten,  flatten},
         {OpType::Softmax,  softmax},
+        {OpType::Shape,     shape_rule},
+        {OpType::Gather,    gather},
+        {OpType::Unsqueeze, unsqueeze},
+        {OpType::Squeeze,   squeeze},
+        {OpType::Concat,    concat},
         {OpType::Conv,     conv},
         {OpType::MaxPool,  max_pool},
         {OpType::GlobalAveragePool, global_average_pool},
@@ -718,12 +938,15 @@ bool has_shape_rule(OpType op) {
 }
 
 void infer_shapes(Graph& g) {
+    // every value computed in this pass; the fully known ones are also kept
+    // with their tensor, for later passes and the emitter
+    std::unordered_map<std::string, Value> values;
     for (const Node* n : g.sorted_nodes()) {
         auto rule = rules().find(n->op);
         if (rule == rules().end())
             throw ShapeError(where(*n) + ": no shape inference rule for this operator yet");
 
-        Context c(*n, g);
+        Context c(*n, g, &values);
         std::vector<TypeInfo> results = rule->second(c);
         if (n->outputs.size() > results.size())
             c.fail("has " + std::to_string(n->outputs.size()) + " outputs, expected at most " +
@@ -734,9 +957,27 @@ void infer_shapes(Graph& g) {
             if (name.empty()) continue;   // omitted optional output
             TypeInfo t = results[i];
             if (const Tensor* declared = g.get_tensor_info(name)) t = merge(c, name, t, *declared);
-            g.add_value_info(Tensor(name, t.shape, t.dtype));
+            Tensor out(name, t.shape, t.dtype);
+            const int64_t count = product(t.shape, 0, t.shape.size());
+            if (t.value && t.dtype == DType::INT64 && count >= 0 && count <= kMaxValueElements &&
+                static_cast<int64_t>(t.value->size()) == count) {
+                values[name] = *t.value;
+                if (std::all_of(t.value->begin(), t.value->end(), [](auto& e) { return e.has_value(); })) {
+                    std::vector<int64_t> known;
+                    for (const std::optional<int64_t>& e : *t.value) known.push_back(*e);
+                    out.data.resize(known.size() * sizeof(int64_t));
+                    if (!known.empty()) std::memcpy(out.data.data(), known.data(), out.data.size());
+                }
+            }
+            g.add_value_info(out);
         }
     }
+}
+
+std::optional<std::vector<int64_t>> computed_value(const Graph& g, const std::string& name) {
+    const Tensor* t = g.get_tensor_info(name);
+    if (!t || t->dtype != DType::INT64 || t->data.empty() || g.is_initializer(name)) return std::nullopt;
+    return std::vector<int64_t>(t->int64_ptr(), t->int64_ptr() + t->data.size() / sizeof(int64_t));
 }
 
 } // namespace null

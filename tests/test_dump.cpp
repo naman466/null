@@ -2,6 +2,7 @@
 #include "fixtures.h"
 #include "core/dump.h"
 
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -118,4 +119,32 @@ TEST(dump_dynamic_dims) {
     std::string s = dump_graph(g);
     CHECK(contains(s, "  x  float32[?, 3, 224, 224]\n"));
     CHECK(contains(s, "-> y: float32[?, 1000]"));
+}
+
+TEST(dump_computed_values) {
+    // shape inference keeps values it computed as the tensor's data; the dump
+    // shows them, a scalar without brackets, and never repeats an initializer
+    Graph g("shape");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {1, 784}, DType::FLOAT32));
+    g.add_node(Node("s", OpType::Shape, {"x"}, {"dims"}));
+    g.add_node(Node("g", OpType::Gather, {"dims", "zero"}, {"batch"}));
+    Tensor dims("dims", {2}, DType::INT64);
+    int64_t v[2] = {1, -1};
+    dims.data.resize(sizeof v);
+    std::memcpy(dims.data.data(), v, sizeof v);
+    g.add_value_info(dims);
+    Tensor batch("batch", {}, DType::INT64);
+    batch.data.resize(sizeof v[0]);
+    std::memcpy(batch.data.data(), v, sizeof v[0]);
+    g.add_value_info(batch);
+    Tensor zero("zero", {}, DType::INT64);
+    zero.set_int64_data({0});
+    zero.shape = {};
+    g.add_initializer(zero);
+    std::string s = dump_graph(g);
+    CHECK(contains(s, "-> dims: int64[2] = [1, -1]\n"));
+    CHECK(contains(s, "-> batch: int64[] = 1\n"));
+    CHECK(!contains(s, "zero: int64[] ="));
 }

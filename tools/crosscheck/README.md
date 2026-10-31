@@ -25,6 +25,7 @@ run is reproducible; `--count` sets the number of models, `--nullc` the compiler
 | `check_conv.py` | ONNX shape inference for shapes; a numpy emulation of the documented summation order, bit for bit; ONNX Runtime within 10⁻⁵ | 400 models: 292 match, 78 rejected by both, 30 too small for the kernel (sized by ONNX, refused by ONNX Runtime and Null), 0 failures |
 | `check_maxpool.py` | an emulation of the specification's formulas, bit for bit (ONNX Runtime, the reference evaluator and ONNX shape inference each deviate in corners, and the deviations are listed) | 500 models: 431 bit-identical, 69 invalid ones rejected, 0 failures |
 | `check_reduce.py` | the mean in float64, rounded once, bit for bit; ONNX Runtime and the reference reported in ulps and against the float32 summation bound | 400 models: 390 bit-identical, 10 invalid ones rejected, 0 failures |
+| `check_shape_ops.py` | onnxruntime, which executes each model: Null's output type and shape must match it, every value Null computes at compile time must equal onnxruntime's output exactly, and what onnxruntime refuses Null must refuse | 600 models: 581 agree (393 with a value computed at compile time, all exact), 19 refused by both, 0 failures |
 
 ```bash
 .venv/Scripts/python -I tools/crosscheck/check_reduce.py --count 400
@@ -38,4 +39,5 @@ byte for byte, verified by hash.
 
 ```bash
 .venv/Scripts/python -I tools/crosscheck/sabotage.py tools/crosscheck/sabotages/reduce.py
+.venv/Scripts/python -I tools/crosscheck/sabotage.py tools/crosscheck/sabotages/shape_ops.py
 ```

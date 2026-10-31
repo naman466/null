@@ -150,7 +150,8 @@ add_cli_test(dump_batch     0 "4  /softmax: Softmax.logits. -> probs: float32.4,
 add_cli_test(dump_dynamic_note 0 "6 tensors still have dynamic dims" "${FIXTURES}/mlp.onnx" --dump)
 add_cli_test(no_shape_rule  2 "shape inference: node 'BatchNormalization_1' .BatchNormalization.: no shape inference rule" "${FIXTURES}/cnn.onnx")
 add_cli_test(dump_no_shape_rule 0 "warning: shape inference stopped" "${FIXTURES}/cnn.onnx" --dump)
-add_cli_test(unsupported    2 "unsupported operators: LSTM .2 nodes., Shape .1 node." "${FIXTURES}/unsupported_ops.onnx")
+add_cli_test(unsupported    2 "unsupported operators: LSTM .2 nodes.
+" "${FIXTURES}/unsupported_ops.onnx")
 add_cli_test(old_opset      2 "opset 11 is not supported" "${FIXTURES}/opset11.onnx")
 add_cli_test(missing_file   2 "cannot open 'does-not-exist.onnx'" does-not-exist.onnx)
 add_cli_test(no_args        1 "Usage: nullc")
@@ -163,7 +164,7 @@ add_cli_test(help           0 "Usage: nullc" --help)
 # is created at configure time, so any of these tests can run alone
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated_models")
 foreach(model relu linear mlp initializers_as_inputs
-              pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy
+              pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy pytorch/mlp_view__legacy_dyn
               pytorch/lenet__legacy pytorch/lenet__dynamo
               pytorch/conv_bn__legacy pytorch/conv_bn__dynamo)
     string(REPLACE "/" "_" test_name "${model}")
@@ -185,7 +186,7 @@ add_cli_test(output_written 0 "wrote .*mlp_cli.c" "${FIXTURES}/mlp.onnx" --batch
 # driver, run it on recorded inputs and compare with onnx runtime's outputs
 # (tests/fixtures/e2e/*.vectors, written by make_e2e_vectors.py)
 foreach(model relu linear mlp initializers_as_inputs
-              pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy
+              pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy pytorch/mlp_view__legacy_dyn
               pytorch/lenet__legacy pytorch/lenet__dynamo
               pytorch/conv_bn__legacy pytorch/conv_bn__dynamo)
     string(REPLACE "/" "__" vectors "${model}")
