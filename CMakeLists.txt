@@ -49,30 +49,34 @@ add_library(null_analysis STATIC
 )
 target_link_libraries(null_analysis PUBLIC null_core)
 
-# c code generation. the runtime header is embedded in the compiler as a
-# string, so generated model.c files can carry it and need nothing else;
-# editing the header re-runs configure, which regenerates the string
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/runtime/null_runtime.h")
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/runtime/null_runtime.h" NULL_RUNTIME_TEXT)
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/runtime_source.cpp"
-    "// generated from runtime/null_runtime.h by CMakeLists.txt, do not edit
-"
-    "#include \"backend/emit_c.h\"
-"
-    "namespace null {
-"
-    "const char* runtime_source() {
-"
-    "    return R\"NULLRT(" "${NULL_RUNTIME_TEXT}" ")NULLRT\";
-"
-    "}
-"
-    "} // namespace null
-")
+# c code generation. each part of the runtime (runtime/null/<part>.h) is
+# embedded in the compiler as a string, so a generated model.c can carry the
+# parts it calls and need nothing else. editing a part re-runs configure,
+# which regenerates the strings. the order is runtime/null_runtime.h's, core
+# first, and a test checks the two agree
+set(NULL_RUNTIME_PARTS core elementwise matmul softmax conv pool)
+set(NULL_RUNTIME_TABLE "")
+foreach(part IN LISTS NULL_RUNTIME_PARTS)
+    set(part_file "${CMAKE_CURRENT_SOURCE_DIR}/runtime/null/${part}.h")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${part_file}")
+    file(READ "${part_file}" part_text)
+    string(APPEND NULL_RUNTIME_TABLE "        {\"${part}\", R\"NULLRT(${part_text})NULLRT\"},\n")
+endforeach()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/runtime_parts.cpp"
+    "// generated from runtime/null/*.h by CMakeLists.txt, do not edit\n"
+    "#include \"backend/emit_c.h\"\n"
+    "namespace null {\n"
+    "const std::vector<RuntimePart>& runtime_parts() {\n"
+    "    static const std::vector<RuntimePart> parts = {\n"
+    "${NULL_RUNTIME_TABLE}"
+    "    };\n"
+    "    return parts;\n"
+    "}\n"
+    "} // namespace null\n")
 
 add_library(null_backend STATIC
     src/backend/emit_c.cpp
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/runtime_source.cpp"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/runtime_parts.cpp"
 )
 target_link_libraries(null_backend PUBLIC null_core null_analysis null_runtime)
 
@@ -92,7 +96,7 @@ foreach(suite IN LISTS TEST_SUITES)
     target_compile_definitions(test_${suite} PRIVATE
         NULL_TEST_SUITE="${suite}"
         NULL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
-        NULL_RUNTIME_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/runtime/null_runtime.h")
+        NULL_RUNTIME_DIR="${CMAKE_CURRENT_SOURCE_DIR}/runtime")
     add_test(NAME ${suite} COMMAND test_${suite})
 endforeach()
 

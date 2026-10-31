@@ -28,6 +28,24 @@ std::string int_list(const std::vector<int64_t>& v) {
     return s;
 }
 
+// the runtime part whose kernel an operator's code calls, or nullptr when
+// it calls none (aliases and constants)
+const char* runtime_part(OpType op) {
+    switch (op) {
+        case OpType::Relu:
+        case OpType::Add:
+        case OpType::Sub:
+        case OpType::Mul:
+        case OpType::Div:     return "elementwise";
+        case OpType::Gemm:
+        case OpType::MatMul:  return "matmul";
+        case OpType::Softmax: return "softmax";
+        case OpType::Conv:    return "conv";
+        case OpType::MaxPool: return "pool";
+        default:              return nullptr;
+    }
+}
+
 class Emitter {
 public:
     Emitter(const Graph& g, const EmitOptions& o) : g_(g), opt_(o) {}
@@ -44,6 +62,7 @@ private:
     const EmitOptions& opt_;
     std::map<std::string, std::string> expr_;   // tensor name -> C expression
     std::set<std::string> idents_;              // every C identifier used
+    std::set<std::string> parts_ = {"core"};    // runtime parts the code calls
     std::ostringstream decls_, body_;
     std::vector<std::string> params_;
     uint64_t buffer_bytes_ = 0, weight_bytes_ = 0;
@@ -157,6 +176,7 @@ private:
 
     void emit_node(const Node& n) {
         body_ << "    /* " << n.name << ": " << optype_to_str(n.op) << " */\n";
+        if (const char* part = runtime_part(n.op)) parts_.insert(part);
         switch (n.op) {
             case OpType::Relu: {
                 std::string x = read(n, 0), y = write(n, 0);
@@ -323,8 +343,11 @@ private:
             << bytes_str(buffer_bytes_) << " (static, so model_run is not reentrant)\n"
             << " * compile with -ffp-contract=off for bit-reproducible results\n */\n\n";
         if (opt_.embed_runtime) {
-            out << "/* ---- runtime/null_runtime.h, embedded ---- */\n" << runtime_source()
-                << "/* ---- end of runtime ---- */\n\n";
+            // only the parts this model calls, in their dependency order
+            for (const RuntimePart& part : runtime_parts())
+                if (parts_.count(part.name))
+                    out << "/* ---- runtime/null/" << part.name << ".h, embedded ---- */\n" << part.text << "\n";
+            out << "/* ---- end of runtime ---- */\n\n";
         } else {
             out << "#include \"null_runtime.h\"\n\n";
         }

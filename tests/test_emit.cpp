@@ -13,8 +13,8 @@
 #include <string>
 #include <vector>
 
-#ifndef NULL_RUNTIME_HEADER
-#error "NULL_RUNTIME_HEADER must point at runtime/null_runtime.h"
+#ifndef NULL_RUNTIME_DIR
+#error "NULL_RUNTIME_DIR must point at the runtime/ folder"
 #endif
 
 using namespace null;
@@ -91,18 +91,40 @@ TEST(emit_float_literals_round_trip) {
 
 // TESTS - RUNTIME EMBEDDING
 
-TEST(emit_runtime_source_is_the_header) {
-    // the copy cmake embeds must be byte-identical to the file (semicolons
-    // and quotes survive the trip through cmake)
-    std::ifstream f(NULL_RUNTIME_HEADER, std::ios::binary);
+// a file's contents, without the \r a text-mode checkout may add (the
+// embedded copies never have them)
+static std::string read_text(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
     std::stringstream ss;
     ss << f.rdbuf();
-    std::string file = ss.str();
-    // text mode on checkout may have added \r, the embedded copy never has them
-    std::string expected;
-    for (char c : file) if (c != '\r') expected += c;
-    CHECK(!expected.empty());
-    CHECK_EQ(std::string(runtime_source()), expected);
+    std::string text;
+    for (char c : ss.str()) if (c != '\r') text += c;
+    return text;
+}
+
+TEST(emit_runtime_parts_are_the_files) {
+    // the copies cmake embeds must be byte-identical to the files (semicolons
+    // and quotes survive the trip through cmake)
+    const auto& parts = runtime_parts();
+    CHECK(!parts.empty());
+    CHECK_EQ(std::string(parts[0].name), std::string("core"));
+    for (const RuntimePart& part : parts) {
+        std::string file = read_text(std::string(NULL_RUNTIME_DIR) + "/null/" + part.name + ".h");
+        CHECK(!file.empty());
+        CHECK_EQ(std::string(part.text), file);
+    }
+
+    // and in the umbrella header's order, which is their dependency order
+    std::string umbrella = read_text(std::string(NULL_RUNTIME_DIR) + "/null_runtime.h");
+    std::vector<std::string> included;
+    for (size_t at = umbrella.find("#include \"null/"); at != std::string::npos;
+         at = umbrella.find("#include \"null/", at + 1)) {
+        size_t start = at + std::strlen("#include \"null/");
+        included.push_back(umbrella.substr(start, umbrella.find(".h\"", start) - start));
+    }
+    std::vector<std::string> names;
+    for (const RuntimePart& part : parts) names.push_back(part.name);
+    CHECK_EQ(included, names);
 }
 
 TEST(emit_embeds_or_includes_runtime) {
@@ -118,7 +140,33 @@ TEST(emit_embeds_or_includes_runtime) {
     CHECK(!contains(included, "static inline void null_gemm_f32("));
 }
 
-// TESTS - GENERATED CODE
+TEST(emit_embeds_only_the_parts_used) {
+    // the mlp calls gemm, relu and softmax: core first, then those parts in order
+    std::string mlp = emit_c(small_mlp());
+    size_t core = mlp.find("/* ---- runtime/null/core.h, embedded ---- */");
+    size_t elementwise = mlp.find("/* ---- runtime/null/elementwise.h, embedded ---- */");
+    size_t matmul = mlp.find("/* ---- runtime/null/matmul.h, embedded ---- */");
+    size_t softmax = mlp.find("/* ---- runtime/null/softmax.h, embedded ---- */");
+    CHECK(core != std::string::npos && elementwise != std::string::npos);
+    CHECK(matmul != std::string::npos && softmax != std::string::npos);
+    CHECK(core < elementwise && elementwise < matmul && matmul < softmax);
+    CHECK(!contains(mlp, "runtime/null/conv.h"));
+    CHECK(!contains(mlp, "null_conv2d_params"));
+    CHECK(!contains(mlp, "runtime/null/pool.h"));
+
+    // a lone relu needs only the core and the elementwise part
+    Graph g("relu");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {4}, DType::FLOAT32));
+    g.add_node(Node("relu", OpType::Relu, {"x"}, {"y"}));
+    infer_shapes(g);
+    std::string relu = emit_c(g);
+    CHECK(contains(relu, "runtime/null/elementwise.h, embedded"));
+    CHECK(!contains(relu, "runtime/null/matmul.h"));
+    CHECK(!contains(relu, "runtime/null/softmax.h"));
+    CHECK(!contains(relu, "null_softmax_f32"));
+}
 
 TEST(emit_small_mlp) {
     EmitOptions opt;

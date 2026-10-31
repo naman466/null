@@ -1,6 +1,7 @@
 #pragma once
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "core/graph.h"
 
@@ -30,8 +31,14 @@ struct EmitOptions {
 // the C source, or EmitError naming the first thing that can't be emitted
 std::string emit_c(const Graph& g, const EmitOptions& options = {});
 
-// the runtime header (runtime/null_runtime.h), embedded at build time
-const char* runtime_source();
+// one part of the runtime, runtime/null/<name>.h, embedded at build time
+struct RuntimePart {
+    const char* name;   // "core", "elementwise", ...
+    const char* text;   // the file's contents
+};
+
+// every part, in the order runtime/null_runtime.h includes them, core first
+const std::vector<RuntimePart>& runtime_parts();
 
 // exact C99 literal for a float: a hex float built from its bits (so it
 // round-trips exactly), or NAN / INFINITY / -INFINITY
