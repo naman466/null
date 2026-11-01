@@ -11,6 +11,7 @@
 #include "backend/emit_c.h"
 #include "core/dump.h"
 #include "frontend/onnx.h"
+#include "opt/optimize.h"
 
 // exit codes
 constexpr int kExitOk    = 0;
@@ -33,6 +34,8 @@ static void print_usage(std::ostream& out) {
            "  --dump                     print the graph: inputs, outputs, weights and\n"
            "                             nodes with their inferred types (dynamic dims\n"
            "                             are allowed here, shown as ?)\n"
+           "  --no-opt                   skip the optimiser: compile or dump the graph\n"
+           "                             as it was loaded\n"
            "  -h, --help                 show this help\n";
 }
 
@@ -80,6 +83,7 @@ int main(int argc, char** argv) {
 
     std::string model_path;
     bool dump = false;
+    bool optimize = true;
     std::optional<int64_t> batch;
     std::string output_path;
     std::vector<std::pair<std::string, std::vector<int64_t>>> input_shapes;
@@ -102,6 +106,8 @@ int main(int argc, char** argv) {
             return kExitOk;
         } else if (arg == "--dump") {
             dump = true;
+        } else if (arg == "--no-opt") {
+            optimize = false;
         } else if (auto v = value_of("-o")) {
             if (v->empty()) return usage_error("-o needs a file name");
             output_path = *v;
@@ -164,9 +170,20 @@ int main(int argc, char** argv) {
         shape_problem = e.what();
     }
 
+    // the optimiser needs every type and shape, so only a fully inferred graph
+    // is optimised; it reports what each pass changed
+    std::string opt_report;
+    if (optimize && shape_problem.empty()) {
+        for (const null::PassResult& r : null::optimize(g))
+            if (r.changes) opt_report += (opt_report.empty() ? "" : ", ") + r.pass + " " + std::to_string(r.changes);
+        if (opt_report.empty()) opt_report = "nothing to change";
+    }
+
     // --dump is for inspection: show what is known, report problems as warnings
     if (dump) {
         std::cout << null::dump_graph(g);
+        if (!opt_report.empty())
+            std::cerr << "nullc: note: optimised (" << opt_report << "), --no-opt shows the graph as loaded\n";
         if (!shape_problem.empty()) {
             std::cerr << "nullc: warning: shape inference stopped: " << shape_problem << "\n";
         } else if (size_t n = null::dynamic_tensors(g).size()) {
@@ -206,6 +223,7 @@ int main(int argc, char** argv) {
               << ", " << null::count_str(g.initializers.size(), "initializer") << ", "
               << null::count_str(g.inputs.size(), "input") << ", "
               << null::count_str(g.outputs.size(), "output") << ", all shapes known, ok\n";
+    if (!opt_report.empty()) std::cout << "optimised: " << opt_report << "\n";
 
     if (!output_path.empty()) {
         std::string source;

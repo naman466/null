@@ -27,6 +27,7 @@ run is reproducible; `--count` sets the number of models, `--nullc` the compiler
 | `check_reduce.py` | the mean in float64, rounded once, bit for bit; ONNX Runtime and the reference reported in ulps and against the float32 summation bound | 400 models: 390 bit-identical, 10 invalid ones rejected, 0 failures |
 | `check_shape_ops.py` | onnxruntime, which executes each model: Null's output type and shape must match it, every value Null computes at compile time must equal onnxruntime's output exactly, and what onnxruntime refuses Null must refuse | 600 models: 581 agree (393 with a value computed at compile time, all exact), 19 refused by both, 0 failures |
 | `check_transformer_ops.py` | Transpose and Gather bit for bit against numpy and onnxruntime; LayerNormalization against the formula in float64 (at most 1 ulp, exact matches counted) and onnxruntime within 1e-5 | 600 models: 582 match (all 182 layer norms bit-identical), 10 refused by both, 8 broadcast scales refused as not supported yet, 0 failures |
+| `check_optimize.py` | the same model built with and without the optimiser: outputs bit-identical, both matching onnxruntime, and no more nodes after optimising | 300 random graphs: all bit-identical and matching, 2,882 nodes optimised down to 571, 0 failures |
 
 ```bash
 .venv/Scripts/python -I tools/crosscheck/check_reduce.py --count 400
@@ -42,4 +43,5 @@ byte for byte, verified by hash.
 .venv/Scripts/python -I tools/crosscheck/sabotage.py tools/crosscheck/sabotages/reduce.py
 .venv/Scripts/python -I tools/crosscheck/sabotage.py tools/crosscheck/sabotages/shape_ops.py
 .venv/Scripts/python -I tools/crosscheck/sabotage.py tools/crosscheck/sabotages/transformer_ops.py
+.venv/Scripts/python -I tools/crosscheck/sabotage.py tools/crosscheck/sabotages/optimize.py
 ```

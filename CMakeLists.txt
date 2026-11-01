@@ -80,19 +80,25 @@ add_library(null_backend STATIC
 )
 target_link_libraries(null_backend PUBLIC null_core null_analysis null_runtime)
 
+# the optimiser: graph rewrites that keep what the graph computes
+add_library(null_opt STATIC
+    src/opt/optimize.cpp
+)
+target_link_libraries(null_opt PUBLIC null_core)
+
 add_executable(null_cli src/main.cpp)
 
-target_link_libraries(null_cli PRIVATE null_core null_frontend null_analysis null_backend)
+target_link_libraries(null_cli PRIVATE null_core null_frontend null_analysis null_opt null_backend)
 
 # tests
 enable_testing()
 
 # one executable per suite, built from tests/test_<suite>.cpp
-set(TEST_SUITES tensor node graph protobuf onnx adversarial fixtures dump shape pytorch emit)
+set(TEST_SUITES tensor node graph protobuf onnx adversarial fixtures dump shape pytorch optimize emit)
 
 foreach(suite IN LISTS TEST_SUITES)
     add_executable(test_${suite} tests/test_main.cpp tests/test_${suite}.cpp)
-    target_link_libraries(test_${suite} PRIVATE null_core null_frontend null_analysis null_backend)
+    target_link_libraries(test_${suite} PRIVATE null_core null_frontend null_analysis null_opt null_backend)
     target_compile_definitions(test_${suite} PRIVATE
         NULL_TEST_SUITE="${suite}"
         NULL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
@@ -158,12 +164,14 @@ add_cli_test(no_args        1 "Usage: nullc")
 add_cli_test(unknown_option 1 "unknown option '--bogus'" --bogus)
 add_cli_test(two_models     1 "only one model can be given" a.onnx b.onnx)
 add_cli_test(help           0 "Usage: nullc" --help)
+add_cli_test(optimised      0 "optimised: remove-identities 3, dead-code 4" "${FIXTURES}/optimizable.onnx")
+add_cli_test(no_opt         0 "graph .optimizable.: 8 nodes, 6 initializers" "${FIXTURES}/optimizable.onnx" --no-opt)
 
 # generated C: nullc -o on every model it can compile, then the C compiler
 # must accept the file as C99 with every warning an error. the output folder
 # is created at configure time, so any of these tests can run alone
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated_models")
-foreach(model relu linear mlp initializers_as_inputs hostile_names
+foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable
               pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy pytorch/mlp_view__legacy_dyn
               pytorch/lenet__legacy pytorch/lenet__dynamo
               pytorch/conv_bn__legacy pytorch/conv_bn__dynamo pytorch/transformer__dynamo)
@@ -185,7 +193,7 @@ add_cli_test(output_written 0 "wrote .*mlp_cli.c" "${FIXTURES}/mlp.onnx" --batch
 # end to end: compile each model with nullc -o, build the generated C with a
 # driver, run it on recorded inputs and compare with onnx runtime's outputs
 # (tests/fixtures/e2e/*.vectors, written by make_e2e_vectors.py)
-foreach(model relu linear mlp initializers_as_inputs hostile_names
+foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable
               pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy pytorch/mlp_view__legacy_dyn
               pytorch/lenet__legacy pytorch/lenet__dynamo
               pytorch/conv_bn__legacy pytorch/conv_bn__dynamo pytorch/transformer__dynamo)

@@ -2,7 +2,10 @@
  * end-to-end driver: runs a generated model on recorded inputs and compares
  * its outputs with onnx runtime's (the .vectors files in tests/fixtures/e2e)
  *
- *   run_vectors <file.vectors>
+ *   run_vectors <file.vectors> [outputs.bin]
+ *
+ * with a second argument, every output of every trial is also written there,
+ * raw, so two builds of the same model can be compared byte for byte.
  *
  * linked with a generated model.c, through its array-form entry point.
  * an output element passes when |got - ref| <= ATOL + RTOL * |ref| (numpy's
@@ -32,6 +35,7 @@ static int64_t argmax(const float* v, int64_t n) {
 
 int main(int argc, char** argv) {
     FILE* f;
+    FILE* dump = NULL;
     char magic[8];
     int32_t trials, n_in, n_out, t, k;
     int64_t sizes[16];
@@ -39,7 +43,11 @@ int main(int argc, char** argv) {
     double worst_abs = 0, worst_rel = 0;
     long bad = 0, checked = 0, class_bad = 0;
 
-    if (argc != 2 || !(f = fopen(argv[1], "rb"))) { fprintf(stderr, "usage: run_vectors <file.vectors>\n"); return 2; }
+    if (argc < 2 || argc > 3 || !(f = fopen(argv[1], "rb"))) {
+        fprintf(stderr, "usage: run_vectors <file.vectors> [outputs.bin]\n");
+        return 2;
+    }
+    if (argc == 3 && !(dump = fopen(argv[2], "wb"))) { fprintf(stderr, "cannot write %s\n", argv[2]); return 2; }
     if (fread(magic, 1, 8, f) != 8 || memcmp(magic, "NULLVEC1", 8) != 0 ||
         fread(&trials, 4, 1, f) != 1 || fread(&n_in, 4, 1, f) != 1 || fread(&n_out, 4, 1, f) != 1 ||
         n_in > 8 || n_out > 8 || fread(sizes, 8, (size_t)(n_in + n_out), f) != (size_t)(n_in + n_out)) {
@@ -70,6 +78,7 @@ int main(int argc, char** argv) {
         model_run_v((const float* const*)in, out);
         for (k = 0; k < n_out; ++k) {
             int64_t i, n = sizes[n_in + k];
+            if (dump && fwrite(out[k], 4, (size_t)n, dump) != (size_t)n) { fprintf(stderr, "write failed\n"); return 2; }
             for (i = 0; i < n; ++i) {
                 double g = out[k][i], r = ref[k][i], err = fabs(g - r);
                 ++checked;
@@ -92,6 +101,7 @@ int main(int argc, char** argv) {
             }
         }
     }
+    if (dump) fclose(dump);
     printf("%d trials, %ld values: %ld outside tolerance, %ld class mismatches "
            "(largest difference %.2g absolute, %.2g relative)\n",
            trials, checked, bad, class_bad, worst_abs, worst_rel);

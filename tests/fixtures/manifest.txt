@@ -78,3 +78,21 @@ node Add x/*in*/,w??/ sum*/ -
 node Relu sum*/ y*/ -
 init w??/ 1 2fdb098540cd1c06 4
 end
+model optimizable.onnx ok 14 17 optimizable
+input x 1 1 8
+output y 1 1 4
+node Gemm x,w1,b1 h transB
+node Identity h h_copy -
+node Relu h_copy a -
+node Dropout a a_drop,mask -
+node Gemm a_drop,w2,b2 logits transB
+node Identity logits y -
+node Mul h,unused_scale dead1 -
+node Relu dead1 dead2 -
+init w1 1 0e3afa9814d1d6e1 6 8
+init b1 1 abd6091981561e42 6
+init w2 1 6cabce3a152f3dc2 4 6
+init b2 1 19b4583105a0ad48 4
+init unused_scale 1 566256b74495a5b3 6
+init never_read 1 fba2b0dbe200a56c 16
+end
