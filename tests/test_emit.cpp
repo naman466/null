@@ -341,19 +341,92 @@ TEST(emit_shape_chain_is_compile_time_only) {
     CHECK(contains(c, "null_relu_f32(in_x, t_y, 12);"));
     CHECK(contains(c, "/* z is t_y, no data moves */"));            // a float Unsqueeze is an alias
     CHECK(contains(c, " * output z: float32[1, 1, 12]"));
+}
 
-    // a Gather of float data has no kernel yet
-    Graph fg("gather");
-    fg.inputs = {"x"};
-    fg.outputs = {"y"};
-    fg.add_value_info(Tensor("x", {4, 3}, DType::FLOAT32));
-    Tensor idx("idx", {}, DType::INT64);
-    idx.set_int64_data({1});
-    idx.shape = {};
-    fg.add_initializer(idx);
-    fg.add_node(Node("g", OpType::Gather, {"x", "idx"}, {"y"}));
-    infer_shapes(fg);
-    CHECK(contains(emit_error(fg), "node 'g' (Gather): no code generation for this operator yet (only for shape values"));
+// x [shape] -> one node -> y, with an optional int64 initializer
+static std::string emit_one(const std::vector<int64_t>& shape, Node n, const std::vector<int64_t>& ints = {},
+                            const std::vector<int64_t>& ints_shape = {}) {
+    Graph g("one");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", shape, DType::FLOAT32));
+    if (n.inputs.size() > 1) {
+        Tensor t(n.inputs[1], ints_shape, DType::INT64);
+        t.set_int64_data(ints);
+        t.shape = ints_shape;
+        g.add_initializer(t);
+    }
+    g.add_node(n);
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    return emit_c(g, opt);
+}
+
+TEST(emit_gather) {
+    // one index, nothing before the axis: a pointer into x
+    std::string row = emit_one({4, 3}, Node("g", OpType::Gather, {"x", "idx"}, {"y"}), {-1}, {});
+    CHECK(contains(row, "/* y is (in_x + 9), no data moves */"));
+    CHECK(!contains(row, "null_gather_f32("));
+    std::string first = emit_one({4, 3}, Node("g", OpType::Gather, {"x", "idx"}, {"y"}), {0}, {1});
+    CHECK(contains(first, "/* y is in_x, no data moves */"));
+
+    // several indices, or an axis with dims before it: the kernel, indices made non-negative
+    Node cols("g", OpType::Gather, {"x", "idx"}, {"y"});
+    cols.add_attr("axis", int64_t{1});
+    std::string c = emit_one({4, 3}, cols, {2, -3}, {2});
+    CHECK(contains(c, "static const int64_t k0_g_indices[2] = {2, 0};"));
+    CHECK(contains(c, "null_gather_f32(in_x, t_y, 4, 3, 1, k0_g_indices, 2);"));
+}
+
+TEST(emit_transpose) {
+    // [1, 8, 32] with perm [1, 0, 2]: only a size-1 dim moves, so no data does
+    Node swap("t", OpType::Transpose, {"x"}, {"y"});
+    swap.add_attr("perm", std::vector<int64_t>{1, 0, 2});
+    CHECK(contains(emit_one({1, 8, 32}, swap), "/* y is in_x, no data moves */"));
+
+    // a real transpose: size-1 dims dropped, the strides of the input dims in output order
+    Node t("t", OpType::Transpose, {"x"}, {"y"});
+    t.add_attr("perm", std::vector<int64_t>{2, 1, 0, 3});
+    std::string c = emit_one({2, 1, 3, 4}, t);
+    CHECK(contains(c, "static const int64_t k0_t_shape[3] = {3, 2, 4};"));
+    CHECK(contains(c, "static const int64_t k1_t_x_strides[3] = {4, 12, 1};"));
+    CHECK(contains(c, "null_transpose_f32(in_x, t_y, 3, k0_t_shape, k1_t_x_strides);"));
+    // no perm: the dims reversed
+    std::string rev = emit_one({2, 3}, Node("t", OpType::Transpose, {"x"}, {"y"}));
+    CHECK(contains(rev, " * output y: float32[3, 2]"));
+    CHECK(contains(rev, "null_transpose_f32(in_x, t_y, 2,"));
+}
+
+TEST(emit_layernorm) {
+    Graph g("ln");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {2, 3, 4}, DType::FLOAT32));
+    Tensor scale("scale", {4}, DType::FLOAT32), bias("bias", {4}, DType::FLOAT32);
+    scale.set_float_data({1, 1, 1, 1});
+    bias.set_float_data({0, 0, 0, 0});
+    g.add_initializer(scale);
+    g.add_initializer(bias);
+    Node n("ln", OpType::LayerNormalization, {"x", "scale", "bias"}, {"y"});
+    n.add_attr("epsilon", 1e-3f);
+    g.add_node(n);
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    CHECK(contains(emit_c(g, opt), "null_layernorm_f32(in_x, w_scale, w_bias, t_y, 6, 4, 0x1.0624dep-10f);"));
+
+    // a scale of [1] would broadcast over the row, which the kernel does not do yet
+    Graph narrow("ln");
+    narrow.inputs = {"x"};
+    narrow.outputs = {"y"};
+    narrow.add_value_info(Tensor("x", {2, 4}, DType::FLOAT32));
+    Tensor one("scale", {1}, DType::FLOAT32);
+    one.set_float_data({2});
+    narrow.add_initializer(one);
+    narrow.add_node(Node("ln", OpType::LayerNormalization, {"x", "scale"}, {"y"}));
+    infer_shapes(narrow);
+    CHECK(contains(emit_error(narrow), "a scale or bias that broadcasts within the normalized dims is not supported yet"));
 }
 
 // splits generated C into its comments and the code between them, and checks

@@ -75,7 +75,7 @@ enum class OpType {
     // pooling
     MaxPool, AveragePool, GlobalAveragePool,
     // normalization
-    BatchNormalization,
+    BatchNormalization, LayerNormalization,
     // shape
     Reshape, Flatten, Transpose, Squeeze, Unsqueeze, Shape,
     // elementwise
@@ -113,6 +113,7 @@ inline std::string optype_to_str(OpType op) {
         case OpType::AveragePool:       return "AveragePool";
         case OpType::GlobalAveragePool: return "GlobalAveragePool";
         case OpType::BatchNormalization:return "BatchNormalization";
+        case OpType::LayerNormalization:return "LayerNormalization";
         case OpType::Reshape:           return "Reshape";
         case OpType::Flatten:           return "Flatten";
         case OpType::Transpose:         return "Transpose";
@@ -158,6 +159,7 @@ inline OpType str_to_optype(const std::string& s) {
     if (s == "AveragePool")       return OpType::AveragePool;
     if (s == "GlobalAveragePool") return OpType::GlobalAveragePool;
     if (s == "BatchNormalization") return OpType::BatchNormalization;
+    if (s == "LayerNormalization") return OpType::LayerNormalization;
     if (s == "Reshape")           return OpType::Reshape;
     if (s == "Flatten")           return OpType::Flatten;
     if (s == "Transpose")         return OpType::Transpose;

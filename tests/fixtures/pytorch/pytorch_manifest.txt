@@ -104,5 +104,44 @@ end
 model transformer__dynamo.onnx dynamo torch 2.14.1 opset 20
 input x 1 8 32
 ops Add:5 Gather:3 Gemm:1 LayerNormalization:2 MatMul:5 Mul:2 Relu:1 Reshape:9 Softmax:1 Squeeze:1 Transpose:8 Unsqueeze:1
-expect load-error unsupported operators: LayerNormalization (2 nodes)
+expect compiles
+shape transpose 8 1 32
+shape val_1 8 1 96
+shape linear 8 1 96
+shape view 8 1 3 32
+shape unsqueeze 1 8 1 3 32
+shape transpose_1 3 8 1 1 32
+shape squeeze 3 8 1 32
+shape select 8 1 32
+shape select_1 8 1 32
+shape select_2 8 1 32
+shape view_1 8 4 8
+shape transpose_2 4 8 8
+shape view_2 8 4 8
+shape transpose_3 4 8 8
+shape view_3 8 4 8
+shape transpose_4 4 8 8
+shape view_4 1 4 8 8
+shape view_6 1 4 8 8
+shape val_65 4 8 8
+shape val_67 1 4 8 8
+shape val_69 1 4 8 8
+shape val_72 1 4 8 8
+shape val_73 1 4 8 8
+shape val_74 1 4 8 8
+shape scaled_dot_product_attention 1 4 8 8
+shape permute 8 1 4 8
+shape view_7 8 32
+shape linear_1 8 32
+shape view_8 8 1 32
+shape transpose_5 1 8 32
+shape add 1 8 32
+shape layer_norm 1 8 32
+shape val_87 1 8 64
+shape linear_2 1 8 64
+shape relu 1 8 64
+shape val_89 1 8 32
+shape linear_3 1 8 32
+shape add_1 1 8 32
+shape y 1 8 32
 end

@@ -984,6 +984,58 @@ TEST(shape_value_from_a_dynamic_dim_must_be_known_when_required) {
     CHECK(contains(shape_error(g), "node 'bad' (Unsqueeze): input 1 ('batch1') depends on a dynamic dim"));
 }
 
+// TESTS - NORMALIZATION AND LAYOUT
+
+TEST(shape_layer_norm) {
+    // the output has the input's shape; scale and bias broadcast to the normalized dims
+    auto ln = [](const Shape& x, const Shape& scale, int64_t axis) {
+        Graph g = one_node(OpType::LayerNormalization, {x, scale});
+        g.nodes[0].add_attr("axis", axis);
+        return g;
+    };
+    Graph g = ln({1, 8, 32}, {32}, -1);
+    infer_shapes(g);
+    CHECK_EQ(info(g, "out0").shape, (Shape{1, 8, 32}));
+    Graph two = ln({2, 3, 4}, {3, 4}, 1);
+    infer_shapes(two);
+    Graph ones = ln({2, 3, 4}, {1, 4}, -2);
+    infer_shapes(ones);
+    Graph dyn = ln({-1, 8, 32}, {32}, -1);
+    infer_shapes(dyn);
+    CHECK_EQ(info(dyn, "out0").shape, (Shape{-1, 8, 32}));
+
+    Graph wrong = ln({2, 3, 4}, {3}, -1);
+    CHECK(contains(shape_error(wrong), "scale [3] does not broadcast to the normalized dims [4]"));
+    Graph wide = ln({2, 3, 4}, {3, 4}, -1);
+    CHECK(contains(shape_error(wide), "scale [3, 4] does not broadcast to the normalized dims [4]"));
+    Graph axis = ln({2, 3}, {3}, 2);
+    CHECK(contains(shape_error(axis), "axis 2 is out of range [-2, 1] for rank 2"));
+    Graph stats = one_node(OpType::LayerNormalization, {{2, 3}, {3}}, DType::FLOAT32, 2);
+    CHECK(contains(shape_error(stats), "the Mean and InvStdDev outputs are not supported"));
+    Graph ints = one_node(OpType::LayerNormalization, {{2, 3}, {3}}, DType::INT64);
+    CHECK(contains(shape_error(ints), "must be float32 or float64"));
+}
+
+TEST(shape_transpose) {
+    auto out = [](const Shape& x, const std::vector<int64_t>& perm) {
+        Graph g = one_node(OpType::Transpose, {x});
+        if (!perm.empty()) g.nodes[0].add_attr("perm", perm);
+        infer_shapes(g);
+        return info(g, "out0").shape;
+    };
+    CHECK_EQ(out({2, 3, 4}, {1, 0, 2}), (Shape{3, 2, 4}));
+    CHECK_EQ(out({1, 8, 1, 3, 32}, {3, 1, 2, 0, 4}), (Shape{3, 8, 1, 1, 32}));
+    CHECK_EQ(out({2, 3, 4}, {}), (Shape{4, 3, 2}));              // no perm: reversed
+    CHECK_EQ(out({-1, 5}, {1, 0}), (Shape{5, -1}));
+    CHECK_EQ(out({}, {}), (Shape{}));
+
+    for (const std::vector<int64_t>& bad : {std::vector<int64_t>{0, 0, 1}, {0, 1}, {0, 1, 3}, {-1, 0, 1}}) {
+        Graph g = one_node(OpType::Transpose, {{2, 3, 4}});
+        g.nodes[0].add_attr("perm", bad);
+        CHECK(contains(shape_error(g), "is not a permutation of the 3 dims of [2, 3, 4]"));
+    }
+}
+
 // TESTS - REDUCTIONS
 
 // ReduceMean with axes as an input (opset 18+), or as an attribute (opset 13-17)

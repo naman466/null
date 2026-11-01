@@ -18,5 +18,7 @@
 #include "null/conv.h"
 #include "null/pool.h"
 #include "null/reduce.h"
+#include "null/norm.h"
+#include "null/layout.h"
 
 #endif /* NULL_RUNTIME_H */

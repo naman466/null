@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -65,7 +66,8 @@ const char* runtime_part(OpType op) {
         case OpType::MaxPool: return "pool";
         case OpType::GlobalAveragePool:
         case OpType::ReduceMean: return "reduce";
-        default:              return nullptr;
+        case OpType::LayerNormalization: return "norm";
+        default:              return nullptr;    // Transpose and Gather add "layout" only when they call it
     }
 }
 
@@ -217,6 +219,8 @@ private:
             case OpType::MaxPool: emit_maxpool(n); break;
             case OpType::GlobalAveragePool:
             case OpType::ReduceMean: emit_reduce_mean(n); break;
+            case OpType::LayerNormalization: emit_layernorm(n); break;
+            case OpType::Transpose: emit_transpose(n); break;
             case OpType::Reshape:
             case OpType::Flatten:
             case OpType::Identity:
@@ -234,6 +238,10 @@ private:
                 if (emit_computed(n)) break;
                 if (n.op == OpType::Unsqueeze || n.op == OpType::Squeeze) {
                     emit_alias(n);
+                    break;
+                }
+                if (n.op == OpType::Gather) {
+                    emit_gather(n);
                     break;
                 }
                 fail(where(n) + ": no code generation for this operator yet (only for shape values "
@@ -381,6 +389,100 @@ private:
                << (dims.empty() ? "0" : int_list(dims)) << "}, {" << (flags.empty() ? "0" : int_list(flags))
                << "}};\n";
         body_ << "    null_reduce_mean_f32(" << x << ", " << y << ", &" << params << ");\n";
+    }
+
+    void emit_layernorm(const Node& n) {
+        std::string x = read(n, 0), scale = read(n, 1);
+        const bool has_b = n.inputs.size() > 2 && !n.inputs[2].empty();
+        std::string b = has_b ? read(n, 2) : "NULL";
+        std::string y = write(n, 0);
+        const auto& s = info(n.inputs[0]).shape;
+        int64_t axis = n.attr_int("axis", -1);
+        if (axis < 0) axis += static_cast<int64_t>(s.size());
+        int64_t outer = 1, count = 1;
+        for (size_t i = 0; i < s.size(); ++i) (static_cast<int64_t>(i) < axis ? outer : count) *= s[i];
+        // the kernel takes one scale and one bias value per normalized element
+        if (info(n.inputs[1]).num_elements() != count || (has_b && info(n.inputs[2]).num_elements() != count))
+            fail(where(n) + ": a scale or bias that broadcasts within the normalized dims is not supported yet");
+        body_ << "    null_layernorm_f32(" << x << ", " << scale << ", " << b << ", " << y << ", " << outer << ", "
+              << count << ", " << c_float_literal(n.attr_float("epsilon", 1e-5f)) << ");\n";
+    }
+
+    // dims of size 1 are dropped first: they cannot change the order of the
+    // bytes. if the others keep their order the output is the same memory and
+    // nothing moves, as for most transposes in a batch of one
+    void emit_transpose(const Node& n) {
+        const auto& s = info(n.inputs[0]).shape;
+        std::vector<int64_t> perm = transpose_perm(n, s.size());
+        std::vector<int64_t> stride(s.size(), 1), out_shape, x_strides;
+        for (size_t d = s.size(); d-- > 1;) stride[d - 1] = stride[d] * s[d];
+        for (int64_t p : perm) {
+            if (s[static_cast<size_t>(p)] == 1) continue;
+            out_shape.push_back(s[static_cast<size_t>(p)]);
+            x_strides.push_back(stride[static_cast<size_t>(p)]);
+        }
+        if (std::is_sorted(x_strides.begin(), x_strides.end(), std::greater<int64_t>())) {
+            emit_alias(n);
+            return;
+        }
+        if (out_shape.size() > NULL_MAX_RANK)
+            fail(where(n) + ": more than " + std::to_string(NULL_MAX_RANK) + " dims of size above 1 are permuted");
+        parts_.insert("layout");
+        std::string x = read(n, 0), y = write(n, 0);
+        std::string shape = int_array(n.name + "_shape", out_shape);
+        std::string strides_id = int_array(n.name + "_x_strides", x_strides);
+        body_ << "    null_transpose_f32(" << x << ", " << y << ", " << out_shape.size() << ", " << shape << ", "
+              << strides_id << ");\n";
+    }
+
+    // the int64 values of a tensor known at compile time: an initializer, a
+    // Constant node or a value shape inference computed
+    std::optional<std::vector<int64_t>> constant_ints(const std::string& name) const {
+        const Tensor* t = nullptr;
+        if (auto it = g_.initializers.find(name); it != g_.initializers.end()) t = &it->second;
+        for (const Node& c : g_.nodes)
+            if (!t && !c.is_dead && c.op == OpType::Constant && !c.outputs.empty() && c.outputs[0] == name) {
+                if (c.has_attr("value_ints")) return c.attr_ints("value_ints");
+                if (c.has_attr("value_int")) return std::vector<int64_t>{c.attr_int("value_int")};
+                if (c.has_attr("value")) t = &c.get_attr("value").as_tensor();
+            }
+        if (t) {
+            if (t->dtype != DType::INT64) return std::nullopt;
+            const int64_t count = t->num_elements();
+            if (count <= 0) return std::vector<int64_t>{};
+            return std::vector<int64_t>(t->int64_ptr(), t->int64_ptr() + count);
+        }
+        return computed_value(g_, name);
+    }
+
+    // float Gather with indices known at compile time. a single index with
+    // nothing before the axis picks one contiguous block: a pointer into the
+    // input, no data moves
+    void emit_gather(const Node& n) {
+        std::optional<std::vector<int64_t>> indices = constant_ints(n.inputs.at(1));
+        if (!indices) fail(where(n) + ": the indices must be int64 and known at compile time");
+        const auto& s = info(n.inputs[0]).shape;
+        int64_t axis = n.attr_int("axis", 0);
+        if (axis < 0) axis += static_cast<int64_t>(s.size());
+        const int64_t count = s[static_cast<size_t>(axis)];
+        int64_t outer = 1, inner = 1;
+        for (size_t i = 0; i < s.size(); ++i) {
+            if (static_cast<int64_t>(i) < axis) outer *= s[i];
+            if (static_cast<int64_t>(i) > axis) inner *= s[i];
+        }
+        for (int64_t& k : *indices) if (k < 0) k += count;    // the shape rule checked the range
+        std::string x = read(n, 0);
+        if (outer == 1 && indices->size() == 1) {
+            const int64_t offset = (*indices)[0] * inner;
+            expr_[n.outputs.at(0)] = offset ? "(" + x + " + " + std::to_string(offset) + ")" : x;
+            body_ << "    /* " << comment_text(n.outputs[0]) << " is " << expr_[n.outputs[0]] << ", no data moves */\n";
+            return;
+        }
+        parts_.insert("layout");
+        std::string y = write(n, 0);
+        std::string idx = int_array(n.name + "_indices", *indices);
+        body_ << "    null_gather_f32(" << x << ", " << y << ", " << outer << ", " << count << ", " << inner << ", "
+              << idx << ", " << indices->size() << ");\n";
     }
 
     void emit_softmax(const Node& n) {

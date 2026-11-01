@@ -720,6 +720,57 @@ std::vector<TypeInfo> global_average_pool(const Context& c) {
     return {{c.in(0).dtype, out}};
 }
 
+// RULES - NORMALIZATION AND LAYOUT
+
+// LayerNormalization(X, Scale, B?) -> Y, opset 17: X normalised over its dims
+// from axis (default -1) on, then scaled and shifted; Scale and B must
+// broadcast to those normalized dims. Y has X's shape
+std::vector<TypeInfo> layer_norm(const Context& c) {
+    c.require_inputs(2, 3);
+    c.require_float(0);
+    for (size_t i = 1; i < c.node.outputs.size(); ++i)
+        if (!c.node.outputs[i].empty()) c.fail("the Mean and InvStdDev outputs are not supported");
+    const std::vector<int64_t>& x = c.in(0).shape;
+    const int64_t rank = static_cast<int64_t>(x.size());
+    if (rank == 0) c.fail("input must have rank >= 1, got a scalar");
+    const size_t axis = static_cast<size_t>(normalize_axis(c, c.node.attr_int("axis", -1), rank, 0));
+    const std::vector<int64_t> normalized(x.begin() + static_cast<std::ptrdiff_t>(axis), x.end());
+    for (size_t i = 1; i < 3; ++i) {
+        if (!c.has(i)) continue;
+        c.require_same_dtype(0, i);
+        const std::vector<int64_t>& s = c.in(i).shape;
+        bool fits = s.size() <= normalized.size();
+        for (size_t k = 1; fits && k <= s.size(); ++k) {
+            int64_t d = s[s.size() - k], n = normalized[normalized.size() - k];
+            fits = d == 1 || d < 0 || n < 0 || d == n;
+        }
+        if (!fits)
+            c.fail(std::string(i == 1 ? "scale " : "bias ") + c.in(i).shape_str() +
+                   " does not broadcast to the normalized dims " + shape_of(normalized));
+    }
+    return {{c.in(0).dtype, x}};
+}
+
+// Transpose(data), perm (default: the dims reversed): output dim i is input
+// dim perm[i]
+std::vector<TypeInfo> transpose(const Context& c) {
+    c.require_inputs(1, 1);
+    const std::vector<int64_t>& x = c.in(0).shape;
+    std::vector<int64_t> perm = transpose_perm(c.node, x.size());
+    std::vector<bool> seen(x.size(), false);
+    bool valid = perm.size() == x.size();
+    for (size_t i = 0; valid && i < perm.size(); ++i) {
+        valid = perm[i] >= 0 && perm[i] < static_cast<int64_t>(x.size()) && !seen[static_cast<size_t>(perm[i])];
+        if (valid) seen[static_cast<size_t>(perm[i])] = true;
+    }
+    if (!valid)
+        c.fail("perm " + shape_of(perm) + " is not a permutation of the " + std::to_string(x.size()) +
+               " dims of " + c.in(0).shape_str());
+    std::vector<int64_t> out;
+    for (int64_t p : perm) out.push_back(x[static_cast<size_t>(p)]);
+    return {{c.in(0).dtype, out}};
+}
+
 const std::unordered_map<OpType, Rule>& rules() {
     static const std::unordered_map<OpType, Rule> table = {
         {OpType::Relu,     unary_numeric},
@@ -750,6 +801,8 @@ const std::unordered_map<OpType, Rule>& rules() {
         {OpType::Unsqueeze, unsqueeze},
         {OpType::Squeeze,   squeeze},
         {OpType::Concat,    concat},
+        {OpType::LayerNormalization, layer_norm},
+        {OpType::Transpose,          transpose},
         {OpType::Conv,     conv},
         {OpType::MaxPool,  max_pool},
         {OpType::GlobalAveragePool, global_average_pool},
@@ -927,6 +980,13 @@ PoolGeometry pool_geometry(const Node& node, const std::vector<int64_t>& x) {
     g.pad_top = win.pad_top; g.pad_left = win.pad_left; g.pad_bottom = win.pad_bottom; g.pad_right = win.pad_right;
     g.out_h = win.out_h; g.out_w = win.out_w;
     return g;
+}
+
+std::vector<int64_t> transpose_perm(const Node& node, size_t rank) {
+    if (node.has_attr("perm")) return node.attr_ints("perm");
+    std::vector<int64_t> perm;
+    for (size_t i = rank; i-- > 0;) perm.push_back(static_cast<int64_t>(i));
+    return perm;
 }
 
 std::vector<bool> reduced_axes(const Node& node, const Graph& g) {

@@ -12,6 +12,8 @@
 #include "test_conv.c"
 #include "test_pool.c"
 #include "test_reduce.c"
+#include "test_norm.c"
+#include "test_layout.c"
 
 int main(void) {
     run_core_tests();
@@ -21,6 +23,8 @@ int main(void) {
     run_conv_tests();
     run_pool_tests();
     run_reduce_tests();
+    run_norm_tests();
+    run_layout_tests();
 
 #ifdef __cplusplus
     printf("=== runtime (C++) ===\n");

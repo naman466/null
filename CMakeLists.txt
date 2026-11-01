@@ -54,7 +54,7 @@ target_link_libraries(null_analysis PUBLIC null_core)
 # parts it calls and need nothing else. editing a part re-runs configure,
 # which regenerates the strings. the order is runtime/null_runtime.h's, core
 # first, and a test checks the two agree
-set(NULL_RUNTIME_PARTS core elementwise matmul softmax conv pool reduce)
+set(NULL_RUNTIME_PARTS core elementwise matmul softmax conv pool reduce norm layout)
 set(NULL_RUNTIME_TABLE "")
 foreach(part IN LISTS NULL_RUNTIME_PARTS)
     set(part_file "${CMAKE_CURRENT_SOURCE_DIR}/runtime/null/${part}.h")
@@ -166,7 +166,7 @@ file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated_models")
 foreach(model relu linear mlp initializers_as_inputs hostile_names
               pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy pytorch/mlp_view__legacy_dyn
               pytorch/lenet__legacy pytorch/lenet__dynamo
-              pytorch/conv_bn__legacy pytorch/conv_bn__dynamo)
+              pytorch/conv_bn__legacy pytorch/conv_bn__dynamo pytorch/transformer__dynamo)
     string(REPLACE "/" "_" test_name "${model}")
     add_test(NAME codegen_${test_name}
         COMMAND ${CMAKE_COMMAND}
@@ -188,7 +188,7 @@ add_cli_test(output_written 0 "wrote .*mlp_cli.c" "${FIXTURES}/mlp.onnx" --batch
 foreach(model relu linear mlp initializers_as_inputs hostile_names
               pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy pytorch/mlp_view__legacy_dyn
               pytorch/lenet__legacy pytorch/lenet__dynamo
-              pytorch/conv_bn__legacy pytorch/conv_bn__dynamo)
+              pytorch/conv_bn__legacy pytorch/conv_bn__dynamo pytorch/transformer__dynamo)
     string(REPLACE "/" "__" vectors "${model}")
     string(REPLACE "/" "_" test_name "${model}")
     add_test(NAME e2e_${test_name}

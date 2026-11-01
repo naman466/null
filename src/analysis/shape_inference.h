@@ -62,6 +62,10 @@ PoolGeometry pool_geometry(const Node& node, const std::vector<int64_t>& x);
 // ShapeError naming the node if the axes are invalid or not constant
 std::vector<bool> reduced_axes(const Node& node, const Graph& g);
 
+// a Transpose node's perm attribute, or the default, the dims reversed (not
+// checked: the shape rule does that)
+std::vector<int64_t> transpose_perm(const Node& node, size_t rank);
+
 // infer the type and shape of every live node output, in execution order
 //   - every node input must already have metadata (graph inputs and
 //     initializers do, earlier node outputs get it from this pass)
