@@ -11,6 +11,7 @@ static null_conv2d_params conv_params(int64_t n, int64_t c, int64_t h, int64_t w
     p.pad_top = pad_top; p.pad_left = pad_left;
     p.out_h = (h + pad_top + pad_bottom - ((kh - 1) * dil + 1)) / stride + 1;
     p.out_w = (w + pad_left + pad_right - ((kw - 1) * dil + 1)) / stride + 1;
+    p.relu = 0;
     return p;
 }
 
@@ -130,7 +131,24 @@ static void test_conv_summation_order(void) {
     CHECK(y[0] == 0.0f);
 }
 
+static void test_conv_fused_relu(void) {
+    /* a 2-channel 3x3 image through 2 filters with bias, padding 1: about
+       half the outputs are negative; fused must equal conv then relu */
+    float x[18], w[36], b[2] = {0.25f, -0.5f}, fused[18], plain[18];
+    int i;
+    null_conv2d_params p = conv_params(1, 2, 3, 3, 2, 3, 3, 1, 1, 1, 1, 1, 1, 1);
+    for (i = 0; i < 18; ++i) x[i] = (float)((i * 7) % 11) - 5.0f;
+    for (i = 0; i < 36; ++i) w[i] = (float)((i * 5) % 9) * 0.25f - 1.0f;
+    null_conv2d_f32(x, w, b, plain, &p);
+    null_relu_f32(plain, plain, 18);
+    p.relu = 1;
+    null_conv2d_f32(x, w, b, fused, &p);
+    CHECK(all_equal(fused, plain, 18));
+    for (i = 0; i < 18; ++i) CHECK(fused[i] >= 0.0f);
+}
+
 static void run_conv_tests(void) {
+    test_conv_fused_relu();
     test_conv_by_hand();
     test_conv_padding_by_hand();
     test_conv_padding_is_skipped();

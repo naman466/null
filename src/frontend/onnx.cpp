@@ -515,6 +515,10 @@ Node parse_node(pb::Reader r) {
             throw fail(e.detail());
         }
         if (n.has_attr(a.name)) throw fail("duplicate attribute '" + a.name + "'");
+        // the compiler marks its own rewrites with these, so a model must not set them
+        if (a.name.rfind(kCompilerAttrPrefix, 0) == 0)
+            throw fail("attribute '" + a.name + "' uses the prefix '" + kCompilerAttrPrefix +
+                       "', which is reserved for the compiler");
         n.attrs.emplace(a.name, std::move(a));
     }
 

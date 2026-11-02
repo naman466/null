@@ -669,6 +669,17 @@ TEST(node_duplicate_attribute_throws) {
     CHECK(node_error(w).find("duplicate attribute 'axis'") != std::string::npos);
 }
 
+TEST(node_compiler_attribute_prefix_is_reserved) {
+    // null.relu marks a Relu fused by the optimiser: a model setting it would
+    // make a Gemm apply a Relu nobody asked for
+    PbWriter w = node_proto("g", "Gemm", {"a", "b"}, {"y"});
+    w.message_field(N_ATTRIBUTE, int_attr("null.relu", 1));
+    CHECK(node_error(w).find("attribute 'null.relu' uses the prefix 'null.', which is reserved") != std::string::npos);
+    PbWriter other = node_proto("g", "Gemm", {"a", "b"}, {"y"});
+    other.message_field(N_ATTRIBUTE, int_attr("nullable", 1));          // only the prefix with the dot
+    CHECK(parse_node(other.reader()).has_attr("nullable"));
+}
+
 TEST(node_bad_attribute_names_node) {
     PbWriter w = node_proto("/rnn/Loop", "Gemm", {"a", "b"}, {"y"});
     PbWriter g = attr_header("body", AT_GRAPH);

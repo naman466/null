@@ -40,6 +40,8 @@ for name, rel, old, new in spec["SABOTAGES"]:
     assert old and new and old != new, f"{name}: empty or no-op sabotage"
     before = open(path, "rb").read()
     text = before.decode("utf-8")
+    if "\r\n" in text:            # a checkout with Windows line endings: match them in multi-line edits
+        old, new = old.replace("\n", "\r\n"), new.replace("\n", "\r\n")
     assert text.count(old) == 1, f"{name}: the text occurs {text.count(old)} times in {rel}, not once"
     open(path, "wb").write(text.replace(old, new, 1).encode("utf-8"))
     try:

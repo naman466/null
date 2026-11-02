@@ -25,7 +25,7 @@ static void test_gemm_plain(void) {
     float b[6] = {7, 8, 9, 10, 11, 12};
     float want[4] = {58, 64, 139, 154};
     float y[4];
-    null_gemm_f32(a, b, NULL, y, 2, 2, 3, 0, 0, 1.0f, 0.0f, 0, 0);
+    null_gemm_f32(a, b, NULL, y, 2, 2, 3, 0, 0, 1.0f, 0.0f, 0, 0, 0);
     CHECK(all_equal(y, want, 4));
 }
 
@@ -37,7 +37,7 @@ static void test_gemm_transposes(void) {
     for (ta = 0; ta <= 1; ++ta)
         for (tb = 0; tb <= 1; ++tb) {
             /* M = 3, N = 3, K = 4: a is [3,4] or [4,3], b is [4,3] or [3,4] */
-            null_gemm_f32(a, b, NULL, y, 3, 3, 4, ta, tb, 1.0f, 0.0f, 0, 0);
+            null_gemm_f32(a, b, NULL, y, 3, 3, 4, ta, tb, 1.0f, 0.0f, 0, 0, 0);
             ref_gemm(a, b, NULL, want, 3, 3, 4, ta, tb, 1.0f, 0.0f, 0, 0);
             CHECK(all_equal(y, want, 9));
         }
@@ -51,7 +51,7 @@ static void test_gemm_linear_layer(void) {
     float y[8], want[8];
     int64_t out[2] = {2, 4}, bshape[1] = {4}, s[2];
     null_broadcast_strides(2, out, 1, bshape, s);
-    null_gemm_f32(x, w, bias, y, 2, 4, 3, 0, 1, 1.0f, 1.0f, s[0], s[1]);
+    null_gemm_f32(x, w, bias, y, 2, 4, 3, 0, 1, 1.0f, 1.0f, s[0], s[1], 0);
     ref_gemm(x, w, bias, want, 2, 4, 3, 0, 1, 1.0f, 1.0f, s[0], s[1]);
     CHECK(all_equal(y, want, 8));
     CHECK(y[0] == 10.0f && y[2] == 31.0f && y[7] == 37.0f);
@@ -70,7 +70,7 @@ static void test_gemm_bias_shapes(void) {
     for (t = 0; t < 5; ++t) {
         int64_t s[2];
         null_broadcast_strides(2, out, ranks[t], shapes[t], s);
-        null_gemm_f32(a, b, c, y, 2, 3, 3, 0, 0, 2.0f, 0.5f, s[0], s[1]);
+        null_gemm_f32(a, b, c, y, 2, 3, 3, 0, 0, 2.0f, 0.5f, s[0], s[1], 0);
         ref_gemm(a, b, c, want, 2, 3, 3, 0, 0, 2.0f, 0.5f, s[0], s[1]);
         CHECK(all_equal(y, want, 6));
     }
@@ -80,15 +80,15 @@ static void test_gemm_edge_sizes(void) {
     float a[4] = {1, 2, 3, 4}, b[4] = {1, 1, 1, 1}, c[2] = {5, 6};
     float y[4] = {-1, -1, -1, -1};
     /* K = 0: the products sum to 0, so y = beta * c */
-    null_gemm_f32(a, b, c, y, 1, 2, 0, 0, 0, 1.0f, 1.0f, 0, 1);
+    null_gemm_f32(a, b, c, y, 1, 2, 0, 0, 0, 1.0f, 1.0f, 0, 1, 0);
     CHECK(y[0] == 5.0f && y[1] == 6.0f);
     /* M = 0 or N = 0: nothing is written */
     y[0] = -1.0f;
-    null_gemm_f32(a, b, c, y, 0, 2, 2, 0, 0, 1.0f, 1.0f, 0, 1);
-    null_gemm_f32(a, b, c, y, 2, 0, 2, 0, 0, 1.0f, 1.0f, 0, 1);
+    null_gemm_f32(a, b, c, y, 0, 2, 2, 0, 0, 1.0f, 1.0f, 0, 1, 0);
+    null_gemm_f32(a, b, c, y, 2, 0, 2, 0, 0, 1.0f, 1.0f, 0, 1, 0);
     CHECK(y[0] == -1.0f);
     /* 1x1x1 */
-    null_gemm_f32(a, b, NULL, y, 1, 1, 1, 0, 0, 3.0f, 0.0f, 0, 0);
+    null_gemm_f32(a, b, NULL, y, 1, 1, 1, 0, 0, 3.0f, 0.0f, 0, 0, 0);
     CHECK(y[0] == 3.0f);
 }
 
@@ -96,7 +96,7 @@ static void test_gemm_nan_propagates(void) {
     float a[2], b[2] = {1, 1}, y[1];
     a[0] = 1.0f;
     a[1] = (float)NAN;
-    null_gemm_f32(a, b, NULL, y, 1, 1, 2, 0, 0, 1.0f, 0.0f, 0, 0);
+    null_gemm_f32(a, b, NULL, y, 1, 1, 2, 0, 0, 1.0f, 0.0f, 0, 0, 0);
     CHECK(isnan(y[0]));
 }
 
@@ -165,7 +165,31 @@ static void test_matmul_summation_order(void) {
     CHECK(y[0] == 0.0f);
 }
 
+static void test_gemm_fused_relu(void) {
+    /* relu applied while writing gives exactly gemm then relu: negative
+       results become 0, -0.0 and NaN pass through as they are */
+    float a[6] = {1, -2, 3, -4, 5, -6}, b[6] = {1, 0, -1, 2, 0, 1}, c[3] = {0.5f, -100, 0};
+    float fused[6], plain[6];
+    float nan_a[2] = {NAN, 1}, nan_b[2] = {1, 1}, nz_a[1] = {-0.0f}, nz_b[1] = {1};
+    float f1[1], p1[1];
+    null_gemm_f32(a, b, c, fused, 2, 3, 2, 0, 0, 1.0f, 1.0f, 0, 1, 1);
+    null_gemm_f32(a, b, c, plain, 2, 3, 2, 0, 0, 1.0f, 1.0f, 0, 1, 0);
+    null_relu_f32(plain, plain, 6);
+    CHECK(all_equal(fused, plain, 6));
+    null_gemm_f32(nan_a, nan_b, NULL, f1, 1, 1, 2, 0, 0, 1.0f, 0.0f, 0, 0, 1);
+    CHECK(f1[0] != f1[0]);
+    /* a gemm's sum starts at +0.0, so -0.0 * 1 still sums to +0.0: only
+       alpha can make the output -0.0 (-1 times +0.0), and relu must keep it */
+    null_gemm_f32(nz_a, nz_b, NULL, f1, 1, 1, 1, 0, 0, -1.0f, 0.0f, 0, 0, 1);
+    null_gemm_f32(nz_a, nz_b, NULL, p1, 1, 1, 1, 0, 0, -1.0f, 0.0f, 0, 0, 0);
+    CHECK(same_bits(p1[0], -0.0f));
+    null_relu_f32(p1, p1, 1);
+    CHECK(same_bits(f1[0], p1[0]));
+    CHECK(same_bits(f1[0], -0.0f));
+}
+
 static void run_matmul_tests(void) {
+    test_gemm_fused_relu();
     test_gemm_plain();
     test_gemm_transposes();
     test_gemm_linear_layer();

@@ -61,6 +61,12 @@ struct Attribute {
     bool has_tensor() const { return std::holds_alternative<Tensor>(value); }
 };
 
+// attributes the compiler adds to nodes itself, to record a rewrite. they use
+// a prefix no ONNX operator uses, and the frontend refuses it in models
+inline constexpr const char* kCompilerAttrPrefix = "null.";
+// on Gemm or Conv: a Relu fused into the node, applied as each output is written
+inline constexpr const char* kFusedRelu = "null.relu";
+
 // supported operator types
 // mirrors a subset of ONNX standard operators
 enum class OpType {

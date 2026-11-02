@@ -39,12 +39,13 @@ void rename_uses(Graph& g, const std::string& from, const std::string& to) {
                 if (in == from) in = to;
 }
 
-// in the order they run: constants first, then identities, then whatever
-// either left without a reader
+// in the order they run: constants first, then identities (which can stand
+// between a Gemm and its Relu), then fusion, then whatever is left without a reader
 const std::vector<Pass>& passes() {
     static const std::vector<Pass> list = {
         {"fold-constants", fold_constants},
         {"remove-identities", remove_identities},
+        {"fuse-relu", fuse_relu},
         {"dead-code", eliminate_dead_nodes},
     };
     return list;
@@ -213,6 +214,31 @@ size_t remove_identities(Graph& g) {
             g.value_info.erase(in);
         }
         if (n.outputs.size() > 1 && !n.outputs[1].empty()) g.value_info.erase(n.outputs[1]);
+        ++changes;
+    }
+    return changes;
+}
+
+size_t fuse_relu(Graph& g) {
+    size_t changes = 0;
+    for (Node& relu : g.nodes) {
+        if (relu.is_dead || relu.op != OpType::Relu || relu.inputs.empty() || relu.inputs[0].empty()) continue;
+        const std::string mid = relu.inputs[0];
+        Node* p = producer_of(g, mid);
+        if (!p || (p->op != OpType::Gemm && p->op != OpType::Conv) || p->has_attr(kFusedRelu)) continue;
+        // the value before the Relu must not be needed by anyone else
+        if (is_graph_output(g, mid)) continue;
+        size_t readers = 0;
+        for (const Node& n : g.nodes)
+            if (!n.is_dead && std::find(n.inputs.begin(), n.inputs.end(), mid) != n.inputs.end()) ++readers;
+        if (readers != 1) continue;
+        const Tensor* t = g.get_tensor_info(mid);
+        if (!t || t->dtype != DType::FLOAT32) continue;
+        p->add_attr(kFusedRelu, int64_t{1});
+        for (std::string& o : p->outputs)
+            if (o == mid) o = relu.outputs.at(0);
+        relu.is_dead = true;
+        g.value_info.erase(mid);
         ++changes;
     }
     return changes;

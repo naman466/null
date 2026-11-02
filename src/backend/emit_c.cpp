@@ -336,7 +336,7 @@ private:
         body_ << "    null_gemm_f32(" << a << ", " << b << ", " << c << ", " << y << ", " << m << ", " << nn
               << ", " << k << ", " << trans_a << ", " << trans_b << ", "
               << c_float_literal(n.attr_float("alpha", 1.0f)) << ", " << c_float_literal(n.attr_float("beta", 1.0f))
-              << ", " << c_rs << ", " << c_cs << ");\n";
+              << ", " << c_rs << ", " << c_cs << ", " << n.attr_int(kFusedRelu, 0) << ");\n";
     }
 
     void emit_matmul(const Node& n) {
@@ -370,7 +370,8 @@ private:
                << g.n << ", " << g.c << ", " << g.h << ", " << g.w << ", "
                << g.m << ", " << g.kh << ", " << g.kw << ", " << g.group << ", "
                << g.stride_h << ", " << g.stride_w << ", " << g.dil_h << ", " << g.dil_w << ", "
-               << g.pad_top << ", " << g.pad_left << ", " << g.out_h << ", " << g.out_w << "};\n";
+               << g.pad_top << ", " << g.pad_left << ", " << g.out_h << ", " << g.out_w << ", "
+               << n.attr_int(kFusedRelu, 0) << "};\n";
         body_ << "    null_conv2d_f32(" << x << ", " << w << ", " << b << ", " << y << ", &" << params << ");\n";
     }
 

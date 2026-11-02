@@ -31,11 +31,13 @@
  *   null_broadcast_strides(2, {M, N}, rank(c), shape(c), s) gives s[0], s[1].
  * pytorch's Linear exports as gemm with trans_b = 1 (weights stored [N, K]),
  * which reads both a and b contiguously in the inner loop.
+ * with relu set, each result goes through relu as it is written (a Relu the
+ * optimiser fused into this gemm), with null_relu_f32's very expression.
  */
 static inline void null_gemm_f32(const float* a, const float* b, const float* c, float* y,
                                  int64_t M, int64_t N, int64_t K,
                                  int trans_a, int trans_b, float alpha, float beta,
-                                 int64_t c_rs, int64_t c_cs) {
+                                 int64_t c_rs, int64_t c_cs, int relu) {
     /* distance between consecutive k for a fixed row of a' / column of b' */
     const int64_t a_k = trans_a ? M : 1, a_i = trans_a ? 1 : K;
     const int64_t b_k = trans_b ? 1 : N, b_j = trans_b ? K : 1;
@@ -55,7 +57,7 @@ static inline void null_gemm_f32(const float* a, const float* b, const float* c,
                     float bias = beta * c[i * c_rs + j * c_cs];
                     out = out + bias;
                 }
-                y[i * N + j] = out;
+                y[i * N + j] = relu && out < 0.0f ? 0.0f : out;
             }
         }
     }
@@ -83,7 +85,7 @@ static inline void null_matmul_f32(const float* a, const float* b, float* y,
     int64_t ia = 0, ib = 0, t;
     int d;
     for (t = 0; t < batches; ++t) {
-        null_gemm_f32(a + ia, b + ib, NULL, y + t * M * N, M, N, K, 0, 0, 1.0f, 0.0f, 0, 0);
+        null_gemm_f32(a + ia, b + ib, NULL, y + t * M * N, M, N, K, 0, 0, 1.0f, 0.0f, 0, 0, 0);
         /* odometer over the batch dims, as in the broadcasting kernels */
         for (d = batch_rank - 1; d >= 0; --d) {
             if (++idx[d] < batch_shape[d]) {

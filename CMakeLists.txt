@@ -141,7 +141,7 @@ function(add_cli_test name expect_exit expect_output)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_cli.cmake")
 endfunction()
 
-add_cli_test(dump           0 "4  /softmax: Softmax.logits. -> probs: float32.[?], 3." "${FIXTURES}/mlp.onnx" --dump)
+add_cli_test(dump           0 "4  /softmax: Softmax.logits. -> probs: float32.[?], 3." "${FIXTURES}/mlp.onnx" --dump --no-opt)
 add_cli_test(summary        0 "graph 'linear': 2 nodes, 2 initializers, 1 input, 1 output, all shapes known, ok" "${FIXTURES}/linear.onnx")
 add_cli_test(dynamic_input  2 "input 'x' has a dynamic shape float32.[?], 1, 4, 4.*--batch N" "${FIXTURES}/mlp.onnx")
 add_cli_test(batch          0 "graph 'mlp': .*all shapes known, ok" "${FIXTURES}/mlp.onnx" --batch 4)
@@ -152,8 +152,8 @@ add_cli_test(input_shape_not_input 2 "'y' is not a graph input" "${FIXTURES}/mlp
 add_cli_test(bad_batch      1 "--batch needs a positive integer, got '0'" "${FIXTURES}/mlp.onnx" --batch 0)
 add_cli_test(bad_input_shape 1 "--input-shape needs NAME=D0,D1" "${FIXTURES}/mlp.onnx" --input-shape oops)
 add_cli_test(batch_no_effect 0 "note: --batch had no effect" "${FIXTURES}/linear.onnx" --batch 3)
-add_cli_test(dump_batch     0 "4  /softmax: Softmax.logits. -> probs: float32.4, 3." "${FIXTURES}/mlp.onnx" --dump --batch 4)
-add_cli_test(dump_dynamic_note 0 "6 tensors still have dynamic dims" "${FIXTURES}/mlp.onnx" --dump)
+add_cli_test(dump_batch     0 "4  /softmax: Softmax.logits. -> probs: float32.4, 3." "${FIXTURES}/mlp.onnx" --dump --batch 4 --no-opt)
+add_cli_test(dump_dynamic_note 0 "6 tensors still have dynamic dims" "${FIXTURES}/mlp.onnx" --dump --no-opt)
 add_cli_test(no_shape_rule  2 "shape inference: node 'BatchNormalization_1' .BatchNormalization.: no shape inference rule" "${FIXTURES}/cnn.onnx")
 add_cli_test(dump_no_shape_rule 0 "warning: shape inference stopped" "${FIXTURES}/cnn.onnx" --dump)
 add_cli_test(unsupported    2 "unsupported operators: LSTM .2 nodes.
@@ -164,7 +164,7 @@ add_cli_test(no_args        1 "Usage: nullc")
 add_cli_test(unknown_option 1 "unknown option '--bogus'" --bogus)
 add_cli_test(two_models     1 "only one model can be given" a.onnx b.onnx)
 add_cli_test(help           0 "Usage: nullc" --help)
-add_cli_test(optimised      0 "optimised: remove-identities 3, dead-code 4" "${FIXTURES}/optimizable.onnx")
+add_cli_test(optimised      0 "optimised: remove-identities 3, fuse-relu 1, dead-code 4" "${FIXTURES}/optimizable.onnx")
 add_cli_test(no_opt         0 "graph .optimizable.: 8 nodes, 6 initializers" "${FIXTURES}/optimizable.onnx" --no-opt)
 
 # generated C: nullc -o on every model it can compile, then the C compiler

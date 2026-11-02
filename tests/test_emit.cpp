@@ -178,7 +178,7 @@ TEST(emit_small_mlp) {
     CHECK(contains(c, "static const float w_b[3] = {"));
     // Flatten moves no data: the gemm reads the input directly
     CHECK(contains(c, "/* xf is in_x, no data moves */"));
-    CHECK(contains(c, "null_gemm_f32(in_x, w_w, w_b, t_h, 1, 3, 4, 0, 1, 0x1.000000p+0f, 0x1.000000p+0f, 0, 1);"));
+    CHECK(contains(c, "null_gemm_f32(in_x, w_w, w_b, t_h, 1, 3, 4, 0, 1, 0x1.000000p+0f, 0x1.000000p+0f, 0, 1, 0);"));
     CHECK(contains(c, "null_relu_f32(t_h, t_r, 3);"));
     CHECK(contains(c, "null_softmax_f32(t_r, t_y, 1, 3, 1);"));
     CHECK(contains(c, "for (i = 0; i < 3; ++i) out_y[i] = t_y[i];"));
@@ -227,8 +227,8 @@ TEST(emit_conv) {
     EmitOptions opt;
     opt.embed_runtime = false;
     std::string c = emit_c(g, opt);
-    // n c h w, m kh kw group, strides, dilations, pad top left, out h w
-    CHECK(contains(c, "_conv = {1, 2, 5, 5, 4, 3, 3, 2, 2, 2, 1, 1, 1, 0, 3, 2};"));
+    // n c h w, m kh kw group, strides, dilations, pad top left, out h w, fused relu
+    CHECK(contains(c, "_conv = {1, 2, 5, 5, 4, 3, 3, 2, 2, 2, 1, 1, 1, 0, 3, 2, 0};"));
     CHECK(contains(c, "null_conv2d_f32(in_x, w_w, w_b, t_h, &"));
     CHECK(contains(c, "null_relu_f32(t_h, t_y, 24);"));
 
@@ -506,6 +506,33 @@ TEST(emit_skips_what_no_output_needs) {
     CHECK(contains(c, "/* copy: Identity, no output depends on it */"));
     CHECK(!contains(c, "static const float"));
     CHECK(contains(c, "null_relu_f32(in_x, t_y, 4);"));
+}
+
+TEST(emit_fused_relu) {
+    // a Gemm or Conv carrying the optimiser's kFusedRelu passes 1 to its kernel
+    Graph g("fused");
+    g.inputs = {"x", "img"};
+    g.outputs = {"y", "z"};
+    g.add_value_info(Tensor("x", {1, 4}, DType::FLOAT32));
+    g.add_value_info(Tensor("img", {1, 1, 3, 3}, DType::FLOAT32));
+    Tensor w("w", {2, 4}, DType::FLOAT32), k("k", {1, 1, 2, 2}, DType::FLOAT32);
+    w.set_float_data(std::vector<float>(8, 1));
+    k.set_float_data(std::vector<float>(4, 1));
+    g.add_initializer(w);
+    g.add_initializer(k);
+    Node gemm("gemm", OpType::Gemm, {"x", "w"}, {"y"});
+    gemm.add_attr("transB", int64_t{1});
+    gemm.add_attr(kFusedRelu, int64_t{1});
+    Node conv("conv", OpType::Conv, {"img", "k"}, {"z"});
+    conv.add_attr(kFusedRelu, int64_t{1});
+    g.add_node(gemm);
+    g.add_node(conv);
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(g, opt);
+    CHECK(contains(c, "null_gemm_f32(in_x, w_w, NULL, t_y, 1, 2, 4, 0, 1, 0x1.000000p+0f, 0x1.000000p+0f, 0, 0, 1);"));
+    CHECK(contains(c, "_conv = {1, 1, 3, 3, 1, 2, 2, 1, 1, 1, 1, 1, 0, 0, 2, 2, 1};"));
 }
 
 TEST(emit_batched_matmul) {

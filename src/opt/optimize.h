@@ -55,6 +55,12 @@ size_t fold_constants(Graph& g);
 // input, stays
 size_t remove_identities(Graph& g);
 
+// a Relu whose input comes from a Gemm or Conv, and is read by nothing else,
+// is fused into it: the node gets the kFusedRelu attribute and writes the
+// Relu's output, and its kernel applies the Relu as it writes. the fused
+// kernels use the Relu kernel's own expression, so the bits are the same
+size_t fuse_relu(Graph& g);
+
 // nodes whose outputs reach no graph output are marked dead, and initializers
 // that nothing reads any more are dropped (unless they are graph inputs)
 size_t eliminate_dead_nodes(Graph& g);

@@ -133,13 +133,15 @@ TEST(opt_rounds_until_nothing_changes) {
                      Node("d", OpType::Dropout, {"b"}, {"c"}), Node("i2", OpType::Identity, {"c"}, {"y"}),
                      Node("lost", OpType::Relu, {"b"}, {"z"})});
     std::vector<PassResult> r = optimize(g);
-    CHECK_EQ(r.size(), size_t{3});
+    CHECK_EQ(r.size(), size_t{4});
     CHECK_EQ(r[0].pass, std::string("fold-constants"));
     CHECK_EQ(r[0].changes, size_t{0});
     CHECK_EQ(r[1].pass, std::string("remove-identities"));
     CHECK_EQ(r[1].changes, size_t{3});
-    CHECK_EQ(r[2].pass, std::string("dead-code"));
-    CHECK_EQ(r[2].changes, size_t{1});
+    CHECK_EQ(r[2].pass, std::string("fuse-relu"));
+    CHECK_EQ(r[2].changes, size_t{0});
+    CHECK_EQ(r[3].pass, std::string("dead-code"));
+    CHECK_EQ(r[3].changes, size_t{1});
     CHECK_EQ(g.live_node_count(), size_t{1});
     CHECK_EQ(node(g, "r").outputs, (std::vector<std::string>{"y"}));
     CHECK(g.validate().empty());
@@ -374,4 +376,77 @@ TEST(opt_fold_shape_chain) {
     // and the graph still infers to the same shapes
     infer_shapes(g);
     CHECK_EQ(g.get_tensor_info("y")->shape, (std::vector<int64_t>{1, 16}));
+}
+
+// TESTS - FUSING RELU
+
+// x[1, 4] -> Gemm(w [3, 4], transB) -> h -> Relu -> y, plus extra nodes
+static Graph gemm_relu(const std::vector<Node>& extra = {}, const std::vector<std::string>& outputs = {"y"}) {
+    Graph g("fuse");
+    g.inputs = {"x"};
+    g.outputs = outputs;
+    g.add_value_info(Tensor("x", {1, 4}, DType::FLOAT32));
+    Tensor w("w", {3, 4}, DType::FLOAT32);
+    w.set_float_data(std::vector<float>(12, 0.5f));
+    g.add_initializer(w);
+    Node gemm("gemm", OpType::Gemm, {"x", "w"}, {"h"});
+    gemm.add_attr("transB", int64_t{1});
+    g.add_node(gemm);
+    g.add_node(Node("relu", OpType::Relu, {"h"}, {"y"}));
+    for (const Node& n : extra) g.add_node(n);
+    infer_shapes(g);
+    return g;
+}
+
+TEST(opt_fuse_relu_into_gemm) {
+    Graph g = gemm_relu();
+    CHECK_EQ(fuse_relu(g), size_t{1});
+    CHECK_EQ(node(g, "gemm").attr_int(kFusedRelu, 0), int64_t{1});
+    CHECK_EQ(node(g, "gemm").outputs, (std::vector<std::string>{"y"}));
+    CHECK(node(g, "relu").is_dead);
+    CHECK(!g.get_tensor_info("h"));
+    CHECK(g.validate().empty());
+    CHECK_EQ(fuse_relu(g), size_t{0});
+}
+
+TEST(opt_fuse_relu_only_when_alone) {
+    // the value before the Relu read by someone else, or a graph output: no fusion
+    Graph shared = gemm_relu({Node("other", OpType::Add, {"h", "h"}, {"z"})}, {"y", "z"});
+    CHECK_EQ(fuse_relu(shared), size_t{0});
+    Graph output = gemm_relu({}, {"y", "h"});
+    CHECK_EQ(fuse_relu(output), size_t{0});
+    // a second Relu after a fused one stays a Relu
+    Graph twice = gemm_relu({Node("again", OpType::Relu, {"y"}, {"z"})}, {"z"});
+    CHECK_EQ(fuse_relu(twice), size_t{1});
+    CHECK(!node(twice, "again").is_dead);
+    // MatMul has no fused form
+    Graph mm("mm");
+    mm.inputs = {"x"};
+    mm.outputs = {"y"};
+    mm.add_value_info(Tensor("x", {2, 2}, DType::FLOAT32));
+    mm.add_node(Node("mm", OpType::MatMul, {"x", "x"}, {"h"}));
+    mm.add_node(Node("relu", OpType::Relu, {"h"}, {"y"}));
+    infer_shapes(mm);
+    CHECK_EQ(fuse_relu(mm), size_t{0});
+}
+
+TEST(opt_fuse_relu_into_conv_through_an_identity) {
+    // Conv -> Identity -> Relu: identities go first, then the Relu fuses
+    Graph g("conv");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {1, 1, 3, 3}, DType::FLOAT32));
+    Tensor w("w", {2, 1, 2, 2}, DType::FLOAT32);
+    w.set_float_data(std::vector<float>(8, -0.25f));
+    g.add_initializer(w);
+    g.add_node(Node("conv", OpType::Conv, {"x", "w"}, {"c"}));
+    g.add_node(Node("id", OpType::Identity, {"c"}, {"c2"}));
+    g.add_node(Node("relu", OpType::Relu, {"c2"}, {"y"}));
+    infer_shapes(g);
+    std::vector<PassResult> r = optimize(g);
+    CHECK_EQ(r[1].changes, size_t{1});                  // the Identity
+    CHECK_EQ(r[2].changes, size_t{1});                  // the Relu
+    CHECK_EQ(g.live_node_count(), size_t{1});
+    CHECK_EQ(node(g, "conv").attr_int(kFusedRelu, 0), int64_t{1});
+    CHECK_EQ(node(g, "conv").outputs, (std::vector<std::string>{"y"}));
 }

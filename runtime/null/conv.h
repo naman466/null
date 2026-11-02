@@ -30,6 +30,7 @@ typedef struct {
     int64_t stride_h, stride_w, dil_h, dil_w;
     int64_t pad_top, pad_left;     /* the end padding only shows in out_h / out_w */
     int64_t out_h, out_w;
+    int relu;                      /* 1: a Relu fused into this conv, applied as each output is written */
 } null_conv2d_params;
 
 static inline void null_conv2d_f32(const float* x, const float* w, const float* b, float* y,
@@ -60,7 +61,8 @@ static inline void null_conv2d_f32(const float* x, const float* w, const float* 
                         }
                     }
                     if (b) acc = acc + b[m];
-                    y[((n * p->m + m) * p->out_h + oh) * p->out_w + ow] = acc;
+                    /* the fused relu is null_relu_f32's very expression */
+                    y[((n * p->m + m) * p->out_h + oh) * p->out_w + ow] = p->relu && acc < 0.0f ? 0.0f : acc;
                 }
             }
         }

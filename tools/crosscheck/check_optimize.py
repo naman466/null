@@ -1,7 +1,8 @@
 """Random graphs full of work for the optimiser: elementwise layers with
 Identity and Dropout nodes between them, an Identity sometimes writing the
 output, branches whose results nobody reads, weights nothing uses, Constant
-nodes, and arithmetic on constants alone for folding to compute. Each
+nodes, arithmetic on constants alone for folding to compute, and Gemm
+layers followed by Relu for fusion. Each
 graph is compiled twice, optimised (the default) and with --no-opt, and run
 on the same input: the two outputs must be bit-identical, both must agree
 with onnxruntime (allclose, 1e-5 relative and 1e-6 absolute), and the
@@ -48,7 +49,23 @@ def random_graph():
             continue
         a = str(rng.choice(pool))
         out = f"t{i}"
-        op = rng.choice(["Relu", "Add", "Sub", "Mul", "Identity", "Identity", "Dropout"])
+        op = rng.choice(["Relu", "Add", "Sub", "Mul", "Identity", "Identity", "Dropout", "Gemm", "Gemm"])
+        if op == "Gemm":                              # a dense layer, usually with a Relu after it: work for fusion
+            trans_b = int(rng.integers(0, 2))
+            inits.append(numpy_helper.from_array(rng.standard_normal([3, 3]).astype(np.float32), f"m{i}"))
+            ins = [a, f"m{i}"]
+            if rng.random() < 0.6:
+                inits.append(numpy_helper.from_array(rng.standard_normal([3]).astype(np.float32), f"bias{i}"))
+                ins.append(f"bias{i}")
+            nodes.append(helper.make_node("Gemm", ins, [out], name=f"n{i}", transB=trans_b))
+            pool.append(out)
+            if rng.random() < 0.7:
+                nodes.append(helper.make_node("Relu", [out], [f"{out}_relu"], name=f"n{i}_relu"))
+                if rng.random() < 0.2:                # a second reader of the pre-Relu value: no fusion
+                    nodes.append(helper.make_node("Add", [out, out], [f"{out}_twice"], name=f"n{i}_twice"))
+                    pool.append(f"{out}_twice")
+                pool.append(f"{out}_relu")
+            continue
         if op in ("Add", "Sub", "Mul"):
             b = str(rng.choice(pool + weights))
             nodes.append(helper.make_node(str(op), [a, b], [out], name=f"n{i}"))
@@ -86,7 +103,7 @@ def nodes_and_report(path, flags):
     return int(count.group(1)) if count else None, report.group(1) if report else ""
 
 
-stats = dict(ok=0, fail=0, before=0, after=0, changed=0)
+stats = dict(ok=0, fail=0, before=0, after=0, changed=0, folded=0, fused=0)
 for k in range(args.count):
     model = random_graph()
     d = os.path.join(args.work, f"o{k:03d}")
@@ -121,8 +138,12 @@ for k in range(args.count):
     stats["before"] += before
     stats["after"] += after
     stats["changed"] += report != "nothing to change"
+    for key, pass_name in (("folded", "fold-constants"), ("fused", "fuse-relu")):
+        m = re.search(pass_name + r" (\d+)", report)
+        stats[key] += int(m.group(1)) if m else 0
 
 print(f"{args.count} random graphs: {stats['ok']} with optimised and unoptimised outputs bit-identical and matching "
       f"onnxruntime, {stats['fail']} failures; the optimiser changed {stats['changed']} of them, "
-      f"{stats['before']} nodes in all down to {stats['after']}")
+      f"{stats['before']} nodes in all down to {stats['after']}, with {stats['folded']} constants folded and "
+      f"{stats['fused']} Relus fused")
 raise SystemExit(1 if stats["fail"] else 0)
