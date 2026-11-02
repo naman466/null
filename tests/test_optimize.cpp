@@ -1,8 +1,11 @@
 #include "test_framework.h"
 #include "analysis/shape_inference.h"
+#include "analysis/specialize.h"
 #include "core/graph.h"
 #include "opt/optimize.h"
 
+#include <cmath>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -130,11 +133,13 @@ TEST(opt_rounds_until_nothing_changes) {
                      Node("d", OpType::Dropout, {"b"}, {"c"}), Node("i2", OpType::Identity, {"c"}, {"y"}),
                      Node("lost", OpType::Relu, {"b"}, {"z"})});
     std::vector<PassResult> r = optimize(g);
-    CHECK_EQ(r.size(), size_t{2});
-    CHECK_EQ(r[0].pass, std::string("remove-identities"));
-    CHECK_EQ(r[0].changes, size_t{3});
-    CHECK_EQ(r[1].pass, std::string("dead-code"));
-    CHECK_EQ(r[1].changes, size_t{1});
+    CHECK_EQ(r.size(), size_t{3});
+    CHECK_EQ(r[0].pass, std::string("fold-constants"));
+    CHECK_EQ(r[0].changes, size_t{0});
+    CHECK_EQ(r[1].pass, std::string("remove-identities"));
+    CHECK_EQ(r[1].changes, size_t{3});
+    CHECK_EQ(r[2].pass, std::string("dead-code"));
+    CHECK_EQ(r[2].changes, size_t{1});
     CHECK_EQ(g.live_node_count(), size_t{1});
     CHECK_EQ(node(g, "r").outputs, (std::vector<std::string>{"y"}));
     CHECK(g.validate().empty());
@@ -179,4 +184,194 @@ TEST(opt_pass_manager_rounds) {
     std::vector<PassResult> stuck = run_passes(g, {{"never-done", never_done}});
     CHECK_EQ(g_calls, kMaxPassRounds);
     CHECK_EQ(stuck[0].changes, static_cast<size_t>(kMaxPassRounds));
+}
+
+// TESTS - CONSTANT FOLDING
+
+static void add_floats(Graph& g, const std::string& name, const std::vector<int64_t>& shape, const std::vector<float>& v) {
+    Tensor t(name, shape, DType::FLOAT32);
+    t.set_float_data(v);
+    t.shape = shape;
+    g.add_initializer(t);
+}
+
+static void add_ints(Graph& g, const std::string& name, const std::vector<int64_t>& shape, const std::vector<int64_t>& v) {
+    Tensor t(name, shape, DType::INT64);
+    t.set_int64_data(v);
+    t.shape = shape;
+    g.add_initializer(t);
+}
+
+static std::vector<float> floats(const Graph& g, const std::string& name) {
+    const Tensor& t = g.initializers.at(name);
+    std::vector<float> v(static_cast<size_t>(t.num_elements()));
+    std::memcpy(v.data(), t.data.data(), v.size() * 4);
+    return v;
+}
+
+static std::vector<int64_t> ints(const Graph& g, const std::string& name) {
+    const Tensor& t = g.initializers.at(name);
+    return std::vector<int64_t>(t.int64_ptr(), t.int64_ptr() + t.num_elements());
+}
+
+// x[4] -> Add(x, c) -> y, c from a Constant node with the given attribute
+static Graph with_constant(Node c) {
+    Graph g("c");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {4}, DType::FLOAT32));
+    g.add_node(c);
+    g.add_node(Node("add", OpType::Add, {"x", "c"}, {"y"}));
+    infer_shapes(g);
+    return g;
+}
+
+TEST(opt_fold_constant_nodes) {
+    Node floats4("k", OpType::Constant, {}, {"c"});
+    floats4.add_attr("value_floats", std::vector<float>{1, 2, 3, 4});
+    Graph g = with_constant(floats4);
+    CHECK_EQ(fold_constants(g), size_t{1});
+    CHECK(node(g, "k").is_dead);
+    CHECK_EQ(floats(g, "c"), (std::vector<float>{1, 2, 3, 4}));
+    CHECK_EQ(g.initializers.at("c").shape, (std::vector<int64_t>{4}));
+
+    Node scalar("k", OpType::Constant, {}, {"c"});
+    scalar.add_attr("value_float", 0.5f);
+    Graph s = with_constant(scalar);
+    fold_constants(s);
+    CHECK_EQ(s.initializers.at("c").shape, (std::vector<int64_t>{}));
+    CHECK_EQ(floats(s, "c"), (std::vector<float>{0.5f}));
+
+    Node tensor("k", OpType::Constant, {}, {"c"});
+    Tensor value("whatever", {4}, DType::FLOAT32);
+    value.set_float_data({4, 3, 2, 1});
+    tensor.add_attr("value", value);
+    Graph t = with_constant(tensor);
+    fold_constants(t);
+    CHECK_EQ(floats(t, "c"), (std::vector<float>{4, 3, 2, 1}));
+    CHECK_EQ(t.initializers.at("c").name, std::string("c"));      // named after the output, not the attribute
+
+    // int64 forms, as a Reshape target and a Gather index
+    Graph r("r");
+    r.inputs = {"x"};
+    r.outputs = {"y", "z"};
+    r.add_value_info(Tensor("x", {4}, DType::FLOAT32));
+    Node shape("k", OpType::Constant, {}, {"shape"});
+    shape.add_attr("value_ints", std::vector<int64_t>{2, 2});
+    Node index("i", OpType::Constant, {}, {"index"});
+    index.add_attr("value_int", int64_t{3});
+    r.add_node(shape);
+    r.add_node(index);
+    r.add_node(Node("reshape", OpType::Reshape, {"x", "shape"}, {"y"}));
+    r.add_node(Node("gather", OpType::Gather, {"x", "index"}, {"z"}));
+    infer_shapes(r);
+    CHECK_EQ(fold_constants(r), size_t{2});
+    CHECK_EQ(ints(r, "shape"), (std::vector<int64_t>{2, 2}));
+    CHECK_EQ(ints(r, "index"), (std::vector<int64_t>{3}));
+    CHECK_EQ(r.initializers.at("index").shape, (std::vector<int64_t>{}));
+
+    // a Constant that is a graph output stays a node: the generated code must produce it
+    Graph out("o");
+    out.outputs = {"c"};
+    Node direct("k", OpType::Constant, {}, {"c"});
+    direct.add_attr("value_floats", std::vector<float>{1});
+    out.add_node(direct);
+    infer_shapes(out);
+    CHECK_EQ(fold_constants(out), size_t{0});
+}
+
+TEST(opt_fold_float_operations) {
+    // y = x + (Relu(a) + b): the bracket is all constants, folded in one pass,
+    // in order; then dead code drops a, b and the intermediate
+    Graph g("f");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {4}, DType::FLOAT32));
+    add_floats(g, "a", {4}, {-1, 2, -3, 4});
+    add_floats(g, "b", {1}, {10});
+    g.add_node(Node("relu", OpType::Relu, {"a"}, {"r"}));
+    g.add_node(Node("plus", OpType::Add, {"r", "b"}, {"s"}));
+    g.add_node(Node("add", OpType::Add, {"x", "s"}, {"y"}));
+    infer_shapes(g);
+    std::vector<PassResult> res = optimize(g);
+    CHECK_EQ(res[0].changes, size_t{2});
+    CHECK_EQ(floats(g, "s"), (std::vector<float>{10, 12, 10, 14}));
+    CHECK_EQ(g.live_node_count(), size_t{1});
+    CHECK_EQ(g.initializers.size(), size_t{1});
+
+    // the other operations, each checked against its definition
+    Graph t("t");
+    t.inputs = {"x"};
+    t.outputs = {"y1", "y2", "y3", "y4"};
+    t.add_value_info(Tensor("x", {1}, DType::FLOAT32));
+    add_floats(t, "m", {2, 3}, {1, 2, 3, 4, 5, 6});
+    add_floats(t, "row", {3}, {1, 0, -1});
+    add_ints(t, "flat", {1}, {6});
+    t.add_node(Node("tr", OpType::Transpose, {"m"}, {"mt"}));                 // [3, 2]
+    t.add_node(Node("sub", OpType::Sub, {"m", "row"}, {"ms"}));               // broadcast over rows
+    t.add_node(Node("div", OpType::Div, {"row", "row"}, {"ones"}));           // 1, NaN, 1
+    t.add_node(Node("rs", OpType::Reshape, {"m", "flat"}, {"mf"}));
+    t.add_node(Node("o1", OpType::Mul, {"x", "mt"}, {"y1"}));
+    t.add_node(Node("o2", OpType::Mul, {"x", "ms"}, {"y2"}));
+    t.add_node(Node("o3", OpType::Mul, {"x", "ones"}, {"y3"}));
+    t.add_node(Node("o4", OpType::Mul, {"x", "mf"}, {"y4"}));
+    infer_shapes(t);
+    CHECK_EQ(fold_constants(t), size_t{4});
+    CHECK_EQ(floats(t, "mt"), (std::vector<float>{1, 4, 2, 5, 3, 6}));
+    CHECK_EQ(t.initializers.at("mt").shape, (std::vector<int64_t>{3, 2}));
+    CHECK_EQ(floats(t, "ms"), (std::vector<float>{0, 2, 4, 3, 5, 7}));
+    std::vector<float> ones = floats(t, "ones");
+    CHECK(ones[0] == 1 && std::isnan(ones[1]) && ones[2] == 1);
+    CHECK_EQ(floats(t, "mf"), (std::vector<float>{1, 2, 3, 4, 5, 6}));
+    CHECK_EQ(t.initializers.at("mf").shape, (std::vector<int64_t>{6}));
+}
+
+TEST(opt_fold_refuses) {
+    Graph g("r");
+    g.inputs = {"x", "over"};
+    g.outputs = {"y1", "y2", "out", "y4"};
+    g.add_value_info(Tensor("x", {1}, DType::FLOAT32));
+    add_floats(g, "col", {2, 1}, {1, 2});
+    add_floats(g, "row", {3}, {1, 2, 3});
+    add_floats(g, "over", {3}, {1, 2, 3});                 // an initializer the caller may replace
+    add_floats(g, "w", {3, 3}, {1, 0, 0, 0, 1, 0, 0, 0, 1});
+    g.add_node(Node("grow", OpType::Add, {"col", "row"}, {"big"}));       // 6 values from 5: not folded
+    g.add_node(Node("o1", OpType::Mul, {"x", "big"}, {"y1"}));
+    g.add_node(Node("input", OpType::Relu, {"over"}, {"r"}));             // reads a graph input
+    g.add_node(Node("o2", OpType::Mul, {"x", "r"}, {"y2"}));
+    g.add_node(Node("output", OpType::Relu, {"row"}, {"out"}));           // is a graph output
+    g.add_node(Node("mm", OpType::MatMul, {"w", "w"}, {"sq"}));           // sums: left for run time
+    g.add_node(Node("o4", OpType::Mul, {"x", "sq"}, {"y4"}));
+    infer_shapes(g);
+    CHECK_EQ(fold_constants(g), size_t{0});
+}
+
+TEST(opt_fold_shape_chain) {
+    // x.view(x.size(0), -1) with the batch fixed: the whole chain becomes one
+    // int64 initializer, and only the Reshape is left
+    Graph g("view");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {-1, 1, 4, 4}, DType::FLOAT32));
+    add_ints(g, "zero", {}, {0});
+    add_ints(g, "axes", {1}, {0});
+    add_ints(g, "rest", {1}, {-1});
+    g.add_node(Node("shape", OpType::Shape, {"x"}, {"s"}));
+    g.add_node(Node("gather", OpType::Gather, {"s", "zero"}, {"batch"}));
+    g.add_node(Node("unsqueeze", OpType::Unsqueeze, {"batch", "axes"}, {"batch1"}));
+    Node cat("concat", OpType::Concat, {"batch1", "rest"}, {"target"});
+    cat.add_attr("axis", int64_t{0});
+    g.add_node(cat);
+    g.add_node(Node("reshape", OpType::Reshape, {"x", "target"}, {"y"}));
+    set_batch_size(g, 1);
+    infer_shapes(g);
+    std::vector<PassResult> res = optimize(g);
+    CHECK_EQ(res[0].changes, size_t{4});
+    CHECK_EQ(g.live_node_count(), size_t{1});
+    CHECK_EQ(ints(g, "target"), (std::vector<int64_t>{1, -1}));
+    CHECK_EQ(g.initializers.size(), size_t{1});
+    CHECK(g.validate().empty());
+    // and the graph still infers to the same shapes
+    infer_shapes(g);
+    CHECK_EQ(g.get_tensor_info("y")->shape, (std::vector<int64_t>{1, 16}));
 }

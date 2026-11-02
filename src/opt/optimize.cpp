@@ -1,7 +1,12 @@
 #include "opt/optimize.h"
 
 #include <algorithm>
+#include <cstring>
+#include <optional>
 #include <unordered_set>
+
+#include "analysis/shape_inference.h"
+#include "null_runtime.h"   // the kernels generated code runs, so folded values are the same bits
 
 namespace null {
 
@@ -34,16 +39,151 @@ void rename_uses(Graph& g, const std::string& from, const std::string& to) {
                 if (in == from) in = to;
 }
 
-// in the order they run; identities first, so the nodes they bypass can die
+// in the order they run: constants first, then identities, then whatever
+// either left without a reader
 const std::vector<Pass>& passes() {
     static const std::vector<Pass> list = {
+        {"fold-constants", fold_constants},
         {"remove-identities", remove_identities},
         {"dead-code", eliminate_dead_nodes},
     };
     return list;
 }
 
+// CONSTANT FOLDING
+
+Tensor make_constant(const std::string& name, const std::vector<int64_t>& shape, DType dtype,
+                     const void* bytes, size_t size) {
+    Tensor t(name, shape, dtype);
+    t.data.resize(size);
+    if (size) std::memcpy(t.data.data(), bytes, size);
+    t.is_constant = true;
+    return t;
+}
+
+std::vector<float> floats_of(const Tensor& t) {
+    std::vector<float> v(static_cast<size_t>(t.num_elements()));
+    if (!v.empty()) std::memcpy(v.data(), t.data.data(), v.size() * sizeof(float));
+    return v;
+}
+
+// a Constant node's value as a tensor named after its output, if it has one
+// of the common forms
+std::optional<Tensor> constant_value(const Node& n, const std::string& name) {
+    if (n.has_attr("value")) {
+        Tensor t = n.get_attr("value").as_tensor();
+        t.name = name;
+        t.is_constant = true;
+        return t;
+    }
+    if (n.has_attr("value_ints")) {
+        std::vector<int64_t> v = n.attr_ints("value_ints");
+        return make_constant(name, {static_cast<int64_t>(v.size())}, DType::INT64, v.data(), v.size() * 8);
+    }
+    if (n.has_attr("value_int")) {
+        int64_t v = n.attr_int("value_int");
+        return make_constant(name, {}, DType::INT64, &v, 8);
+    }
+    if (n.has_attr("value_floats")) {
+        std::vector<float> v = n.attr_floats("value_floats");
+        return make_constant(name, {static_cast<int64_t>(v.size())}, DType::FLOAT32, v.data(), v.size() * 4);
+    }
+    if (n.has_attr("value_float")) {
+        float v = n.attr_float("value_float");
+        return make_constant(name, {}, DType::FLOAT32, &v, 4);
+    }
+    return std::nullopt;
+}
+
+// a float node whose inputs are all constants, computed with the runtime's
+// own kernels. only operations whose result is exact or a single rounding per
+// element are folded, so the compiler computes the very bits the generated
+// code would; anything else is left for run time
+std::optional<std::vector<float>> evaluate(const Graph& g, const Node& n, const std::vector<int64_t>& out) {
+    const Tensor& x = g.initializers.at(n.inputs[0]);
+    std::vector<float> a = floats_of(x);
+    std::vector<float> y(static_cast<size_t>(Tensor("", out, DType::FLOAT32).num_elements()));
+    switch (n.op) {
+        case OpType::Relu:
+            null_relu_f32(a.data(), y.data(), static_cast<int64_t>(y.size()));
+            return y;
+        case OpType::Add:
+        case OpType::Sub:
+        case OpType::Mul:
+        case OpType::Div: {
+            const Tensor& w = g.initializers.at(n.inputs[1]);
+            std::vector<float> b = floats_of(w);
+            const int rank = static_cast<int>(out.size());
+            if (rank > NULL_MAX_RANK) return std::nullopt;
+            int64_t sa[NULL_MAX_RANK] = {0}, sb[NULL_MAX_RANK] = {0};
+            null_broadcast_strides(rank, out.data(), static_cast<int>(x.shape.size()), x.shape.data(), sa);
+            null_broadcast_strides(rank, out.data(), static_cast<int>(w.shape.size()), w.shape.data(), sb);
+            auto kernel = n.op == OpType::Add ? null_add_bcast_f32 : n.op == OpType::Sub ? null_sub_bcast_f32
+                        : n.op == OpType::Mul ? null_mul_bcast_f32 : null_div_bcast_f32;
+            kernel(a.data(), b.data(), y.data(), rank, out.data(), sa, sb);
+            return y;
+        }
+        case OpType::Transpose: {
+            const int rank = static_cast<int>(x.shape.size());
+            if (rank > NULL_MAX_RANK) return std::nullopt;
+            std::vector<int64_t> perm = transpose_perm(n, x.shape.size());
+            std::vector<int64_t> stride(x.shape.size(), 1), xs;
+            for (size_t d = x.shape.size(); d-- > 1;) stride[d - 1] = stride[d] * x.shape[d];
+            for (int64_t p : perm) xs.push_back(stride[static_cast<size_t>(p)]);
+            null_transpose_f32(a.data(), y.data(), rank, out.data(), xs.data());
+            return y;
+        }
+        case OpType::Reshape:
+        case OpType::Flatten:
+        case OpType::Squeeze:
+        case OpType::Unsqueeze:
+        case OpType::Identity:
+            return a;      // the same elements in the same order
+        default:
+            return std::nullopt;
+    }
+}
+
 } // namespace
+
+size_t fold_constants(Graph& g) {
+    size_t changes = 0;
+    // in execution order, so a value folded here can feed the next fold
+    for (size_t idx : g.topological_sort()) {
+        Node& n = g.nodes[idx];
+        if (n.is_dead || n.outputs.size() != 1 || n.outputs[0].empty()) continue;
+        const std::string out = n.outputs[0];
+        // the generated code must compute its outputs, so they are never folded
+        if (is_graph_output(g, out)) continue;
+        const Tensor* info = g.get_tensor_info(out);
+        if (!info || info->num_elements() < 0) continue;
+
+        std::optional<Tensor> folded;
+        if (n.op == OpType::Constant) {
+            folded = constant_value(n, out);
+        } else if (std::optional<std::vector<int64_t>> v = computed_value(g, out)) {
+            folded = make_constant(out, info->shape, DType::INT64, v->data(), v->size() * 8);
+        } else if (info->dtype == DType::FLOAT32 && !n.inputs.empty()) {
+            // every input a constant the caller cannot replace, the first one
+            // float, and the result no larger than what it replaces
+            int64_t inputs_size = 0;
+            bool constant = true;
+            for (const std::string& in : n.inputs) {
+                if (in.empty() || !g.is_initializer(in) || g.is_graph_input(in)) constant = false;
+                else inputs_size += g.initializers.at(in).num_elements();
+            }
+            if (constant && g.initializers.at(n.inputs[0]).dtype == DType::FLOAT32 &&
+                info->num_elements() <= inputs_size)
+                if (std::optional<std::vector<float>> y = evaluate(g, n, info->shape))
+                    folded = make_constant(out, info->shape, DType::FLOAT32, y->data(), y->size() * 4);
+        }
+        if (!folded) continue;
+        n.is_dead = true;
+        g.add_initializer(*folded);
+        ++changes;
+    }
+    return changes;
+}
 
 size_t remove_identities(Graph& g) {
     size_t changes = 0;

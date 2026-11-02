@@ -26,7 +26,7 @@ FIXTURES = os.path.dirname(HERE)
 
 # every fixture null can compile today, with the batch fixed to 1
 MODELS = [
-    "relu", "linear", "mlp", "initializers_as_inputs", "hostile_names", "optimizable",
+    "relu", "linear", "mlp", "initializers_as_inputs", "hostile_names", "optimizable", "foldable",
     "pytorch/mlp__legacy_dyn", "pytorch/mlp__dynamo_dyn", "pytorch/mlp_view__legacy", "pytorch/mlp_view__legacy_dyn",
     "pytorch/lenet__legacy", "pytorch/lenet__dynamo", "pytorch/conv_bn__legacy", "pytorch/conv_bn__dynamo", "pytorch/transformer__dynamo",
 ]

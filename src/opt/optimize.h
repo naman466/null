@@ -39,6 +39,15 @@ std::vector<PassResult> optimize(Graph& g);
 
 // the passes, each returning how many changes it made
 
+// computes at compile time what does not depend on the inputs, turning each
+// result into an initializer: Constant nodes; int64 values shape inference
+// worked out (a folded Shape chain); and float nodes whose inputs are all
+// initializers, for the operations computed exactly or with one rounding per
+// element (Relu, Add, Sub, Mul, Div, Transpose and the reshapes), using the
+// runtime's own kernels. graph outputs are never folded, nor initializers the
+// caller may replace (graph inputs), nor results larger than their inputs
+size_t fold_constants(Graph& g);
+
 // Identity, and Dropout at inference, pass their input through: consumers are
 // rewired to the input, or, when the output is a graph output, the input's
 // producer is made to write the output directly, so the graph's interface

@@ -480,6 +480,34 @@ TEST(emit_names_cannot_escape_comments) {
     CHECK(contains(c, "/* f* // *int*from_alias; is "));
 }
 
+TEST(emit_skips_what_no_output_needs) {
+    // unoptimised graphs can hold a Constant nothing reads, or an Identity of a
+    // weight that goes nowhere: their weights would be arrays no code reads,
+    // which -Werror rejects, so no code is written for them at all
+    Graph g("unused");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {4}, DType::FLOAT32));
+    Tensor w("w", {4}, DType::FLOAT32);
+    w.set_float_data({1, 2, 3, 4});
+    g.add_initializer(w);
+    Node k("k", OpType::Constant, {}, {"c"});
+    Tensor v("v", {2}, DType::FLOAT32);
+    v.set_float_data({5, 6});
+    k.add_attr("value", v);
+    g.add_node(k);
+    g.add_node(Node("copy", OpType::Identity, {"w"}, {"w2"}));
+    g.add_node(Node("relu", OpType::Relu, {"x"}, {"y"}));
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(g, opt);
+    CHECK(contains(c, "/* k: Constant, no output depends on it */"));
+    CHECK(contains(c, "/* copy: Identity, no output depends on it */"));
+    CHECK(!contains(c, "static const float"));
+    CHECK(contains(c, "null_relu_f32(in_x, t_y, 4);"));
+}
+
 TEST(emit_batched_matmul) {
     Graph g("bmm");
     g.inputs = {"a"};

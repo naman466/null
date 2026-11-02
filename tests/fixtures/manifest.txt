@@ -96,3 +96,21 @@ init b2 1 19b4583105a0ad48 4
 init unused_scale 1 566256b74495a5b3 6
 init never_read 1 fba2b0dbe200a56c 16
 end
+model foldable.onnx ok 14 17 foldable
+input x 1 2 6
+output y 1 2 4
+node Transpose w_t w perm
+node MatMul x,w xw -
+node Add bias_a,bias_b bias -
+node Add xw,bias h -
+node Constant - raw_scale value
+node Relu raw_scale scale_pos -
+node Sub h,scale_pos h2 -
+node Reshape gain_flat,gain_shape gain -
+node Mul h2,gain y -
+init w_t 1 f9627705e31a5ec1 4 6
+init bias_a 1 6526d4179463dc87 4
+init bias_b 1 ae6ff786f8b28d0e 4
+init gain_flat 1 9dedbcc871d214f9 4
+init gain_shape 7 bd36edcd222d23a0 2
+end

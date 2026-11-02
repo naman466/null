@@ -78,7 +78,26 @@ public:
     std::string run() {
         check_static();
         declare_inputs();
-        for (const Node* n : g_.sorted_nodes()) emit_node(*n);
+        std::vector<const Node*> order = g_.sorted_nodes();
+        // a node no output depends on gets no code, even unoptimised: its
+        // weights would be arrays nothing reads, which -Werror rejects
+        std::set<std::string> needed(g_.outputs.begin(), g_.outputs.end());
+        std::set<const Node*> wanted;
+        for (auto it = order.rbegin(); it != order.rend(); ++it) {
+            bool used = false;
+            for (const std::string& out : (*it)->outputs) used = used || (!out.empty() && needed.count(out));
+            if (!used) continue;
+            wanted.insert(*it);
+            for (const std::string& in : (*it)->inputs) needed.insert(in);
+        }
+        for (const Node* n : order) {
+            if (wanted.count(n)) {
+                emit_node(*n);
+            } else {
+                body_ << "    /* " << comment_text(n->name) << ": " << optype_to_str(n->op)
+                      << ", no output depends on it */\n";
+            }
+        }
         return assemble();
     }
 

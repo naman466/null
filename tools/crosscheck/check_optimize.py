@@ -1,6 +1,7 @@
 """Random graphs full of work for the optimiser: elementwise layers with
 Identity and Dropout nodes between them, an Identity sometimes writing the
-output, branches whose results nobody reads, and weights nothing uses. Each
+output, branches whose results nobody reads, weights nothing uses, Constant
+nodes, and arithmetic on constants alone for folding to compute. Each
 graph is compiled twice, optimised (the default) and with --no-opt, and run
 on the same input: the two outputs must be bit-identical, both must agree
 with onnxruntime (allclose, 1e-5 relative and 1e-6 absolute), and the
@@ -30,8 +31,21 @@ def random_graph():
     for i in range(int(rng.integers(3, 6))):          # weights, broadcast [3] or full [2, 3]
         shape = [3] if rng.random() < 0.5 else SHAPE
         inits.append(numpy_helper.from_array(rng.standard_normal(shape).astype(np.float32), f"w{i}"))
-    weights = [t.name for t in inits]
+    weights = [t.name for t in inits]                 # constants: initializers and what is computed from them
     for i in range(int(rng.integers(4, 15))):
+        r = rng.random()
+        if r < 0.15:                                  # a Constant node
+            shape = [3] if rng.random() < 0.5 else SHAPE
+            value = numpy_helper.from_array(rng.standard_normal(shape).astype(np.float32), f"k{i}")
+            nodes.append(helper.make_node("Constant", [], [f"k{i}"], name=f"n{i}", value=value))
+            weights.append(f"k{i}")
+            continue
+        if r < 0.35:                                  # arithmetic on constants only: work for folding
+            op = rng.choice(["Relu", "Add", "Sub", "Mul", "Identity"])
+            ins = [str(rng.choice(weights))] + ([str(rng.choice(weights))] if op in ("Add", "Sub", "Mul") else [])
+            nodes.append(helper.make_node(str(op), ins, [f"c{i}"], name=f"n{i}"))
+            weights.append(f"c{i}")
+            continue
         a = str(rng.choice(pool))
         out = f"t{i}"
         op = rng.choice(["Relu", "Add", "Sub", "Mul", "Identity", "Identity", "Dropout"])
@@ -44,6 +58,9 @@ def random_graph():
         else:
             nodes.append(helper.make_node(str(op), [a], [out], name=f"n{i}"))
         pool.append(out)
+    if len(pool) == 1:                                # every step was a constant: give y something to depend on
+        nodes.append(helper.make_node("Relu", ["x"], ["t_last"], name="last"))
+        pool.append("t_last")
     # the output: usually the last tensor, sometimes an earlier one, so later
     # nodes become dead; through an Identity named y, or renamed to y directly
     src = pool[-1] if rng.random() < 0.6 else str(rng.choice(pool[1:]))
