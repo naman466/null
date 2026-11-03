@@ -26,6 +26,9 @@ struct EmitOptions {
     bool embed_runtime = true;
     // name of the generated entry point
     std::string function_name = "model_run";
+    // let intermediate buffers that are never alive at the same time share
+    // memory; off, every buffer gets its own
+    bool plan_memory = true;
 };
 
 // the C source, or EmitError naming the first thing that can't be emitted

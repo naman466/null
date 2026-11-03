@@ -566,9 +566,68 @@ TEST(emit_unique_identifiers) {
     opt.embed_runtime = false;
     std::string c = emit_c(g, opt);
     CHECK(contains(c, "const float* in_a_b"));
-    CHECK(contains(c, "static float t_a_b[2];"));
-    CHECK(contains(c, "static float t_a_b_2[2];"));
+    CHECK(contains(c, "static float* const t_a_b = null_arena + 0;"));
+    CHECK(contains(c, "static float* const t_a_b_2 = null_arena + 16;"));
     CHECK(contains(c, "null_relu_f32(t_a_b, t_a_b_2, 2);"));
+}
+
+// x[n] -> Relu -> a -> Relu -> b -> ... a chain of `links` relus ending in y,
+// with extra nodes appended
+static Graph relu_chain(int links, int64_t n, const std::vector<Node>& extra = {}) {
+    Graph g("chain");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {n}, DType::FLOAT32));
+    std::string prev = "x";
+    for (int i = 0; i < links; ++i) {
+        std::string out = i + 1 == links ? "y" : "t" + std::to_string(i);
+        g.add_node(Node("r" + std::to_string(i), OpType::Relu, {prev}, {out}));
+        prev = out;
+    }
+    for (const Node& e : extra) g.add_node(e);
+    infer_shapes(g);
+    return g;
+}
+
+TEST(emit_memory_plan) {
+    // a chain of five: each buffer is alive from its step to the next, so two
+    // ranges of 64 floats take turns; unplanned, five ranges side by side
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(relu_chain(5, 64), opt);
+    CHECK(contains(c, "static float null_arena[128];"));
+    CHECK(contains(c, "t_t0 = null_arena + 0;   /* t0: float32[64], step 1 to step 2 */"));
+    CHECK(contains(c, "t_t1 = null_arena + 64;   /* t1: float32[64], step 2 to step 3 */"));
+    CHECK(contains(c, "t_t2 = null_arena + 0;"));
+    CHECK(contains(c, "t_y = null_arena + 0;   /* y: float32[64], step 5 to the end */"));
+    CHECK(contains(c, "intermediate buffers 512 B in one static arena (1.2 KB if each buffer had its own memory)"));
+
+    opt.plan_memory = false;
+    std::string flat = emit_c(relu_chain(5, 64), opt);
+    CHECK(contains(flat, "static float null_arena[320];"));
+    CHECK(contains(flat, "t_y = null_arena + 256;"));
+    CHECK(contains(flat, "intermediate buffers 1.2 KB in one static arena, so"));
+
+    // sizes are rounded up to 16 floats, so every buffer starts on 64 bytes
+    opt.plan_memory = true;
+    CHECK(contains(emit_c(relu_chain(3, 5), opt), "t_t1 = null_arena + 16;"));
+}
+
+TEST(emit_memory_plan_follows_aliases) {
+    // t0 is read again at the end through a reshape alias, so it stays alive
+    // the whole time and nothing may take its place; y, read only by the
+    // output copy, lives to the end
+    Node flat("flat", OpType::Flatten, {"t0"}, {"t0_flat"});
+    Node late("late", OpType::Add, {"t2", "t0_flat"}, {"z"});
+    Graph g = relu_chain(4, 64, {flat, late});
+    g.outputs = {"y", "z"};
+    g.add_value_info(Tensor("t0_flat", {64, 1}, DType::FLOAT32));
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(g, opt);
+    CHECK(contains(c, "/* t0: float32[64], step 1 to step 6 */"));
+    CHECK(contains(c, "/* y: float32[64], step 4 to the end */"));
 }
 
 TEST(emit_reshape_to_output_and_constants) {

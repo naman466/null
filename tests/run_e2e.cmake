@@ -1,6 +1,7 @@
 # end-to-end: compile a model with nullc -o, build the generated C with the
 # vectors driver, and check its answers against onnx runtime's recorded ones.
-# the model is compiled twice, optimised (the default) and with --no-opt:
+# the model is compiled twice, optimised with its memory planned (the default)
+# and with --no-opt --no-plan:
 # both must agree with onnx runtime, and with each other bit for bit
 #
 #   cmake -DNULLC=<null_cli> -DMODEL=<model.onnx> -DVECTORS=<file.vectors>
@@ -23,7 +24,7 @@ foreach(variant opt noopt)
     endif()
     set(flags "")
     if(variant STREQUAL "noopt")
-        set(flags --no-opt)
+        set(flags --no-opt --no-plan)
     endif()
 
     execute_process(

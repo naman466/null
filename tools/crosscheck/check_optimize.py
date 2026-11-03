@@ -3,7 +3,8 @@ Identity and Dropout nodes between them, an Identity sometimes writing the
 output, branches whose results nobody reads, weights nothing uses, Constant
 nodes, arithmetic on constants alone for folding to compute, and Gemm
 layers followed by Relu for fusion. Each
-graph is compiled twice, optimised (the default) and with --no-opt, and run
+graph is compiled twice, optimised with its memory planned (the default)
+and with --no-opt --no-plan, and run
 on the same input: the two outputs must be bit-identical, both must agree
 with onnxruntime (allclose, 1e-5 relative and 1e-6 absolute), and the
 optimised graph must not have more nodes."""
@@ -113,7 +114,7 @@ for k in range(args.count):
     x = rng.standard_normal(SHAPE).astype(np.float32)
     ref, err = run_ort(model, x)
     outs = {}
-    for variant, flags in (("opt", []), ("noopt", ["--no-opt"])):
+    for variant, flags in (("opt", []), ("noopt", ["--no-opt", "--no-plan"])):
         c_file = os.path.join(d, f"{variant}.c")
         r = subprocess.run([args.nullc, path, *flags, "-o", c_file], capture_output=True, text=True)
         if r.returncode != 0:

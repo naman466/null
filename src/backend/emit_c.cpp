@@ -92,6 +92,7 @@ public:
         }
         for (const Node* n : order) {
             if (wanted.count(n)) {
+                ++step_;
                 emit_node(*n);
             } else {
                 body_ << "    /* " << comment_text(n->name) << ": " << optype_to_str(n->op)
@@ -111,6 +112,22 @@ private:
     std::vector<std::string> params_;
     uint64_t buffer_bytes_ = 0, weight_bytes_ = 0;
     int temp_ = 0;
+
+    // an intermediate buffer, and the steps (emitted nodes, counted from 1)
+    // during which it must keep its value: written at `first`, last read at
+    // `last`. memory planning gives it `offset`, in floats, in one arena
+    struct Buffer {
+        std::string id, tensor;
+        int64_t count;
+        int first, last;
+        int64_t offset = 0;
+    };
+    std::vector<Buffer> buffers_;
+    std::map<std::string, size_t> root_;        // tensor name -> the buffer its data lives in
+    int step_ = 0;
+    int64_t arena_ = 0;                         // floats, after planning
+    static constexpr int64_t kAlign = 16;       // buffers start on 64-byte boundaries
+    static constexpr int kToTheEnd = 1 << 30;   // the last step of a graph output: after every node
 
     [[noreturn]] void fail(const std::string& msg) const { throw EmitError(msg); }
 
@@ -163,7 +180,12 @@ private:
         if (i >= n.inputs.size() || n.inputs[i].empty())
             fail(where(n) + ": missing input " + std::to_string(i));
         const std::string& name = n.inputs[i];
-        if (auto it = expr_.find(name); it != expr_.end()) return it->second;
+        if (auto it = expr_.find(name); it != expr_.end()) {
+            // reading a buffer, directly or through an alias, keeps it alive until now
+            if (auto r = root_.find(name); r != root_.end())
+                buffers_[r->second].last = std::max(buffers_[r->second].last, step_);
+            return it->second;
+        }
         if (auto it = g_.initializers.find(name); it != g_.initializers.end())
             return emit_constant(n, name, it->second);
         fail(where(n) + ": input '" + name + "' has no value");
@@ -195,12 +217,55 @@ private:
             fail(where(n) + ": output '" + name + "' is " + dtype_name(t.dtype) + ", only float32 is supported");
         const int64_t count = t.num_elements();
         std::string id = ident("t_", name);
-        decls_ << "static float " << id << "[" << (count ? count : 1) << "];   /* "
-               << comment_text(name) << ": " << type_str(t) << " */\n";
-        buffer_bytes_ += static_cast<uint64_t>(count) * 4;
+        buffers_.push_back({id, name, count ? count : 1, step_, step_});
+        root_[name] = buffers_.size() - 1;
+        buffer_bytes_ += static_cast<uint64_t>(((count ? count : 1) + kAlign - 1) / kAlign * kAlign) * 4;   // as --no-plan lays it out
         expr_[name] = id;
         return id;
     }
+
+    // `out` is `in` seen differently (a new shape, or a pointer into it): it
+    // is the same buffer, which stays alive while either is read
+    void alias(const std::string& out, const std::string& in, const std::string& expr) {
+        expr_[out] = expr;
+        if (auto r = root_.find(in); r != root_.end()) root_[out] = r->second;
+    }
+
+    // memory planning. two buffers alive at the same step (their [first, last]
+    // ranges meet) need disjoint memory; any others may share it. largest
+    // first, each goes at the lowest aligned offset clear of every placed
+    // buffer it meets in time. a step's inputs and outputs always meet, so no
+    // kernel ever writes over what it reads. unplanned, every buffer gets its
+    // own range, which is what separate static arrays amounted to
+    void plan_memory() {
+        auto aligned = [](int64_t n) { return (n + kAlign - 1) / kAlign * kAlign; };
+        std::vector<size_t> order(buffers_.size());
+        for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+        std::stable_sort(order.begin(), order.end(),
+                         [&](size_t a, size_t b) { return buffers_[a].count > buffers_[b].count; });
+        std::vector<size_t> placed;
+        for (size_t i : order) {
+            Buffer& b = buffers_[i];
+            // the ranges taken by placed buffers alive at the same time, by offset
+            std::vector<std::pair<int64_t, int64_t>> taken;
+            for (size_t j : placed) {
+                const Buffer& o = buffers_[j];
+                if (!opt_.plan_memory || (o.first <= b.last && b.first <= o.last))
+                    taken.push_back({o.offset, o.offset + aligned(o.count)});
+            }
+            std::sort(taken.begin(), taken.end());
+            int64_t at = 0;
+            for (const auto& [lo, hi] : taken) {
+                if (at + b.count <= lo) break;       // fits in the gap before this one
+                at = std::max(at, hi);
+            }
+            b.offset = at;
+            arena_ = std::max(arena_, at + aligned(b.count));
+            placed.push_back(i);
+        }
+    }
+
+    std::string when(int step) const { return step >= kToTheEnd ? "the end" : "step " + std::to_string(step); }
 
     // a static const int64 array for shapes and strides
     std::string int_array(const std::string& what, const std::vector<int64_t>& v) {
@@ -285,7 +350,7 @@ private:
 
     // same bytes, new shape: the output is another name for the input
     void emit_alias(const Node& n) {
-        expr_[n.outputs.at(0)] = read(n, 0);
+        alias(n.outputs.at(0), n.inputs.at(0), read(n, 0));
         body_ << "    /* " << comment_text(n.outputs[0]) << " is " << expr_[n.outputs[0]] << ", no data moves */\n";
         if (n.op == OpType::Dropout && n.outputs.size() > 1 && !n.outputs[1].empty())
             for (const Node& other : g_.nodes)
@@ -494,7 +559,7 @@ private:
         std::string x = read(n, 0);
         if (outer == 1 && indices->size() == 1) {
             const int64_t offset = (*indices)[0] * inner;
-            expr_[n.outputs.at(0)] = offset ? "(" + x + " + " + std::to_string(offset) + ")" : x;
+            alias(n.outputs.at(0), n.inputs.at(0), offset ? "(" + x + " + " + std::to_string(offset) + ")" : x);
             body_ << "    /* " << comment_text(n.outputs[0]) << " is " << expr_[n.outputs[0]] << ", no data moves */\n";
             return;
         }
@@ -526,6 +591,7 @@ private:
             if (t.dtype != DType::FLOAT32)
                 fail("output '" + name + "' is " + dtype_name(t.dtype) + ", only float32 outputs are supported");
             if (!expr_.count(name)) fail("output '" + name + "' is never computed");
+            if (auto r = root_.find(name); r != root_.end()) buffers_[r->second].last = kToTheEnd;
             std::string id = ident("out_", name);
             params_.push_back("float* " + id);
             tail << "    for (i = 0; i < " << t.num_elements() << "; ++i) " << id << "[i] = "
@@ -536,8 +602,12 @@ private:
         out << "/*\n * generated by null from graph '" << comment_text(g_.name) << "', do not edit\n *\n";
         for (auto& name : g_.inputs) out << " * input  " << comment_text(name) << ": " << type_str(info(name)) << "\n";
         for (auto& name : g_.outputs) out << " * output " << comment_text(name) << ": " << type_str(info(name)) << "\n";
+        plan_memory();
         out << " *\n * weights " << bytes_str(weight_bytes_) << ", intermediate buffers "
-            << bytes_str(buffer_bytes_) << " (static, so model_run is not reentrant)\n"
+            << bytes_str(static_cast<uint64_t>(arena_) * 4) << " in one static arena";
+        if (opt_.plan_memory)
+            out << " (" << bytes_str(buffer_bytes_) << " if each buffer had its own memory)";
+        out << ", so model_run is not reentrant\n"
             << " * compile with -ffp-contract=off for bit-reproducible results\n */\n\n";
         if (opt_.embed_runtime) {
             // only the parts this model calls, in their dependency order
@@ -548,7 +618,16 @@ private:
         } else {
             out << "#include \"null_runtime.h\"\n\n";
         }
-        out << decls_.str() << "\nvoid " << opt_.function_name << "(";
+        out << decls_.str();
+        if (!buffers_.empty()) {
+            out << "\n/* intermediate buffers: one arena, shared by buffers never alive at the same time */\n"
+                << "static float null_arena[" << arena_ << "];\n";
+            for (const Buffer& b : buffers_)
+                out << "static float* const " << b.id << " = null_arena + " << b.offset << ";   /* "
+                    << comment_text(b.tensor) << ": " << type_str(info(b.tensor)) << ", " << when(b.first)
+                    << " to " << when(b.last) << " */\n";
+        }
+        out << "\nvoid " << opt_.function_name << "(";
         for (size_t i = 0; i < params_.size(); ++i) out << (i ? ", " : "") << params_[i];
         out << ") {\n    int64_t i;\n" << body_.str() << "    /* outputs */\n" << tail.str() << "}\n";
 

@@ -36,6 +36,8 @@ static void print_usage(std::ostream& out) {
            "                             are allowed here, shown as ?)\n"
            "  --no-opt                   skip the optimiser: compile or dump the graph\n"
            "                             as it was loaded\n"
+           "  --no-plan                  give every intermediate buffer its own memory\n"
+           "                             instead of sharing one planned arena\n"
            "  -h, --help                 show this help\n";
 }
 
@@ -84,6 +86,7 @@ int main(int argc, char** argv) {
     std::string model_path;
     bool dump = false;
     bool optimize = true;
+    bool plan = true;
     std::optional<int64_t> batch;
     std::string output_path;
     std::vector<std::pair<std::string, std::vector<int64_t>>> input_shapes;
@@ -108,6 +111,8 @@ int main(int argc, char** argv) {
             dump = true;
         } else if (arg == "--no-opt") {
             optimize = false;
+        } else if (arg == "--no-plan") {
+            plan = false;
         } else if (auto v = value_of("-o")) {
             if (v->empty()) return usage_error("-o needs a file name");
             output_path = *v;
@@ -228,7 +233,9 @@ int main(int argc, char** argv) {
     if (!output_path.empty()) {
         std::string source;
         try {
-            source = null::emit_c(g);
+            null::EmitOptions options;
+            options.plan_memory = plan;
+            source = null::emit_c(g, options);
         } catch (const null::EmitError& e) {
             std::cerr << "nullc: error: code generation: " << e.what() << "\n";
             return kExitModel;
