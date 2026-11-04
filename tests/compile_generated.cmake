@@ -2,7 +2,7 @@
 # C99, all warnings as errors. proves the generated file is valid,
 # self-contained C on its own
 #
-#   cmake -DNULLC=<null_cli> -DMODEL=<model.onnx> -DOUT=<dir> -DCC=<c compiler> -P compile_generated.cmake
+#   cmake -DNULLC=<nullc> -DMODEL=<model.onnx> -DOUT=<dir> -DCC=<c compiler> -P compile_generated.cmake
 
 file(MAKE_DIRECTORY "${OUT}")
 get_filename_component(name "${MODEL}" NAME_WE)

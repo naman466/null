@@ -13,6 +13,10 @@
 #include "frontend/onnx.h"
 #include "opt/optimize.h"
 
+#ifndef NULL_VERSION
+#define NULL_VERSION "unknown"
+#endif
+
 // exit codes
 constexpr int kExitOk    = 0;
 constexpr int kExitUsage = 1;   // bad command line
@@ -38,6 +42,7 @@ static void print_usage(std::ostream& out) {
            "                             as it was loaded\n"
            "  --no-plan                  give every intermediate buffer its own memory\n"
            "                             instead of sharing one planned arena\n"
+           "  --version                  print the version and exit\n"
            "  -h, --help                 show this help\n";
 }
 
@@ -106,6 +111,9 @@ int main(int argc, char** argv) {
 
         if (arg == "-h" || arg == "--help") {
             print_usage(std::cout);
+            return kExitOk;
+        } else if (arg == "--version") {
+            std::cout << "nullc " << NULL_VERSION << "\n";
             return kExitOk;
         } else if (arg == "--dump") {
             dump = true;

@@ -4,7 +4,7 @@
 # and with --no-opt --no-plan:
 # both must agree with onnx runtime, and with each other bit for bit
 #
-#   cmake -DNULLC=<null_cli> -DMODEL=<model.onnx> -DVECTORS=<file.vectors>
+#   cmake -DNULLC=<nullc> -DMODEL=<model.onnx> -DVECTORS=<file.vectors>
 #         -DDRIVER=<run_vectors.c> -DOUT=<dir> -DCC=<c compiler> -P run_e2e.cmake
 
 file(MAKE_DIRECTORY "${OUT}")

@@ -54,7 +54,7 @@ for name, rel, old, new in spec["SABOTAGES"]:
         line = f"{name}: ctest failed {failed or 'nothing'}"
         if "CHECK" in spec:
             script, count = spec["CHECK"]
-            nullc = os.path.join(args.build, "null_cli" + (".exe" if sys.platform == "win32" else ""))
+            nullc = os.path.join(args.build, "nullc" + (".exe" if sys.platform == "win32" else ""))
             out = subprocess.run([sys.executable, "-I", os.path.join(here, script), "--nullc", nullc,
                                   "--work", os.path.join(args.build, "crosscheck", "sabotage"), "--count", str(count)],
                                  capture_output=True, text=True).stdout

@@ -1,7 +1,7 @@
 # runs the cli once and checks both its exit code and its output
 # (ctest's PASS_REGULAR_EXPRESSION alone ignores the exit code)
 #
-#   cmake -DEXE=<null_cli> "-DARGS=a;b" -DEXPECT_EXIT=<code> "-DEXPECT_OUTPUT=<regex>" -P run_cli.cmake
+#   cmake -DEXE=<nullc> "-DARGS=a;b" -DEXPECT_EXIT=<code> "-DEXPECT_OUTPUT=<regex>" -P run_cli.cmake
 
 execute_process(
     COMMAND ${EXE} ${ARGS}

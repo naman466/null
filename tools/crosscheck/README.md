@@ -17,7 +17,7 @@ default, `--cc` to change it) builds each generated model.
 ## The checks
 
 Each builds random one-node models, compiles them with `nullc`, runs the generated C and compares. Each has a fixed seed, so a
-run is reproducible; `--count` sets the number of models, `--nullc` the compiler to test (default `build-win/null_cli`), and
+run is reproducible; `--count` sets the number of models, `--nullc` the compiler to test (default `build-win/nullc`), and
 `--work` where the models and binaries go (default `build-win/crosscheck/<name>`). A script exits non-zero if anything failed.
 
 | Script | Arbiter | Result when last run |

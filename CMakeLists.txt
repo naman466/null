@@ -86,9 +86,10 @@ add_library(null_opt STATIC
 )
 target_link_libraries(null_opt PUBLIC null_core null_analysis null_runtime)
 
-add_executable(null_cli src/main.cpp)
+add_executable(nullc src/main.cpp)
+target_compile_definitions(nullc PRIVATE NULL_VERSION="${PROJECT_VERSION}")
 
-target_link_libraries(null_cli PRIVATE null_core null_frontend null_analysis null_opt null_backend)
+target_link_libraries(nullc PRIVATE null_core null_frontend null_analysis null_opt null_backend)
 
 # tests
 enable_testing()
@@ -129,12 +130,12 @@ target_include_directories(fuzz_frontend PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/te
 add_test(NAME fuzz COMMAND fuzz_frontend 20000 1)
 set_tests_properties(fuzz PROPERTIES TIMEOUT 120)
 
-# cli end to end: run null_cli on the fixtures, check exit code and output
+# cli end to end: run nullc on the fixtures, check exit code and output
 set(FIXTURES "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
 function(add_cli_test name expect_exit expect_output)
     add_test(NAME cli_${name}
         COMMAND ${CMAKE_COMMAND}
-            "-DEXE=$<TARGET_FILE:null_cli>"
+            "-DEXE=$<TARGET_FILE:nullc>"
             "-DARGS=${ARGN}"
             "-DEXPECT_EXIT=${expect_exit}"
             "-DEXPECT_OUTPUT=${expect_output}"
@@ -164,6 +165,7 @@ add_cli_test(no_args        1 "Usage: nullc")
 add_cli_test(unknown_option 1 "unknown option '--bogus'" --bogus)
 add_cli_test(two_models     1 "only one model can be given" a.onnx b.onnx)
 add_cli_test(help           0 "Usage: nullc" --help)
+add_cli_test(version        0 "^nullc [0-9]+\\.[0-9]+\\.[0-9]+" --version)
 add_cli_test(optimised      0 "optimised: remove-identities 3, fuse-relu 1, dead-code 4" "${FIXTURES}/optimizable.onnx")
 add_cli_test(no_opt         0 "graph .optimizable.: 8 nodes, 6 initializers" "${FIXTURES}/optimizable.onnx" --no-opt)
 
@@ -178,7 +180,7 @@ foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable f
     string(REPLACE "/" "_" test_name "${model}")
     add_test(NAME codegen_${test_name}
         COMMAND ${CMAKE_COMMAND}
-            "-DNULLC=$<TARGET_FILE:null_cli>"
+            "-DNULLC=$<TARGET_FILE:nullc>"
             "-DMODEL=${FIXTURES}/${model}.onnx"
             "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/generated_models"
             "-DCC=${CMAKE_C_COMPILER}"
@@ -201,7 +203,7 @@ foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable f
     string(REPLACE "/" "_" test_name "${model}")
     add_test(NAME e2e_${test_name}
         COMMAND ${CMAKE_COMMAND}
-            "-DNULLC=$<TARGET_FILE:null_cli>"
+            "-DNULLC=$<TARGET_FILE:nullc>"
             "-DMODEL=${FIXTURES}/${model}.onnx"
             "-DVECTORS=${FIXTURES}/e2e/${vectors}.vectors"
             "-DDRIVER=${CMAKE_CURRENT_SOURCE_DIR}/tests/e2e/run_vectors.c"

@@ -124,8 +124,8 @@ mkdir build && cd build
 cmake ..
 make
 
-./null_cli model.onnx          # load and check a model
-./null_cli model.onnx --dump   # print its inputs, outputs, weights and nodes
+./nullc model.onnx          # load and check a model
+./nullc model.onnx --dump   # print its inputs, outputs, weights and nodes
 ```
 
 ### Running the Tests

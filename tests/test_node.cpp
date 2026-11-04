@@ -108,7 +108,6 @@ TEST(optype_round_trip) {
     // every onnx op maps to its name and back
     for (int i = static_cast<int>(OpType::Add); i <= static_cast<int>(OpType::Identity); ++i) {
         OpType op = static_cast<OpType>(i);
-        if (op == OpType::ReluFused) continue;
         std::string s = optype_to_str(op);
         CHECK(s != "Unknown");
         if (str_to_optype(s) != op)
@@ -120,7 +119,7 @@ TEST(optype_unknown_and_internal) {
     CHECK_EQ(str_to_optype("LSTM"), OpType::Unknown);
     CHECK_EQ(str_to_optype("relu"), OpType::Unknown);   // names are case sensitive
     CHECK_EQ(optype_to_str(OpType::Unknown), "Unknown");
-    // fused ops are optimizer-only and never parsed from a model
-    CHECK_EQ(optype_to_str(OpType::ReluFused), "ReluFused");
+    // a fused Relu is an attribute on its Gemm or Conv (kFusedRelu), not an
+    // operator: the name means nothing to the parser
     CHECK_EQ(str_to_optype("ReluFused"), OpType::Unknown);
 }

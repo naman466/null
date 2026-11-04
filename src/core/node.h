@@ -92,8 +92,6 @@ enum class OpType {
     Gather, Concat, Split, Slice,
     // misc
     Dropout, Cast, Clip,
-    // fused (created by optimizer)
-    ReluFused,    // e.g., Gemm + Relu
     // constant
     Constant,
     // identity (no-op, used internally)
@@ -142,7 +140,6 @@ inline std::string optype_to_str(OpType op) {
         case OpType::Dropout:           return "Dropout";
         case OpType::Cast:              return "Cast";
         case OpType::Clip:              return "Clip";
-        case OpType::ReluFused:         return "ReluFused";
         case OpType::Constant:          return "Constant";
         case OpType::Identity:          return "Identity";
         default:                        return "Unknown";

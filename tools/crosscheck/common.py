@@ -19,8 +19,8 @@ CFLAGS = ["-std=c99", "-O2", "-ffp-contract=off", "-Wall", "-Wextra", "-Wpedanti
 
 def parse_args(description, default_count, name):
     p = argparse.ArgumentParser(description=description)
-    p.add_argument("--nullc", default=os.path.join(ROOT, "build-win", "null_cli" + EXE),
-                   help="the null_cli executable (default: build-win/null_cli)")
+    p.add_argument("--nullc", default=os.path.join(ROOT, "build-win", "nullc" + EXE),
+                   help="the nullc executable (default: build-win/nullc)")
     p.add_argument("--work", default=os.path.join(ROOT, "build-win", "crosscheck", name),
                    help="folder for the generated models, C files and binaries")
     p.add_argument("--count", type=int, default=default_count, help="number of random models")
