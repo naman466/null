@@ -145,3 +145,285 @@ shape linear_3 1 8 32
 shape add_1 1 8 32
 shape y 1 8 32
 end
+model mobilenet_v2_small__legacy.onnx legacy torch 2.14.1 opset 20
+input x 1 3 64 64
+ops Add:11 Clip:35 Constant:70 Conv:52 Flatten:1 Gemm:1 GlobalAveragePool:1
+expect compiles
+shape /features/features.0/features.0.0/Conv_output_0 1 8 32 32
+shape /features/features.0/features.0.2/Constant_output_0
+shape /features/features.0/features.0.2/Constant_1_output_0
+shape /features/features.0/features.0.2/Clip_output_0 1 8 32 32
+shape /features/features.1/conv/conv.0/conv.0.0/Conv_output_0 1 8 32 32
+shape /features/features.1/conv/conv.0/conv.0.2/Constant_output_0
+shape /features/features.1/conv/conv.0/conv.0.2/Constant_1_output_0
+shape /features/features.1/conv/conv.0/conv.0.2/Clip_output_0 1 8 32 32
+shape /features/features.1/conv/conv.1/Conv_output_0 1 8 32 32
+shape /features/features.1/Add_output_0 1 8 32 32
+shape /features/features.2/conv/conv.0/conv.0.0/Conv_output_0 1 48 32 32
+shape /features/features.2/conv/conv.0/conv.0.2/Constant_output_0
+shape /features/features.2/conv/conv.0/conv.0.2/Constant_1_output_0
+shape /features/features.2/conv/conv.0/conv.0.2/Clip_output_0 1 48 32 32
+shape /features/features.2/conv/conv.1/conv.1.0/Conv_output_0 1 48 16 16
+shape /features/features.2/conv/conv.1/conv.1.2/Constant_output_0
+shape /features/features.2/conv/conv.1/conv.1.2/Constant_1_output_0
+shape /features/features.2/conv/conv.1/conv.1.2/Clip_output_0 1 48 16 16
+shape /features/features.2/conv/conv.2/Conv_output_0 1 8 16 16
+shape /features/features.3/conv/conv.0/conv.0.0/Conv_output_0 1 48 16 16
+shape /features/features.3/conv/conv.0/conv.0.2/Constant_output_0
+shape /features/features.3/conv/conv.0/conv.0.2/Constant_1_output_0
+shape /features/features.3/conv/conv.0/conv.0.2/Clip_output_0 1 48 16 16
+shape /features/features.3/conv/conv.1/conv.1.0/Conv_output_0 1 48 16 16
+shape /features/features.3/conv/conv.1/conv.1.2/Constant_output_0
+shape /features/features.3/conv/conv.1/conv.1.2/Constant_1_output_0
+shape /features/features.3/conv/conv.1/conv.1.2/Clip_output_0 1 48 16 16
+shape /features/features.3/conv/conv.2/Conv_output_0 1 8 16 16
+shape /features/features.3/Add_output_0 1 8 16 16
+shape /features/features.4/conv/conv.0/conv.0.0/Conv_output_0 1 48 16 16
+shape /features/features.4/conv/conv.0/conv.0.2/Constant_output_0
+shape /features/features.4/conv/conv.0/conv.0.2/Constant_1_output_0
+shape /features/features.4/conv/conv.0/conv.0.2/Clip_output_0 1 48 16 16
+shape /features/features.4/conv/conv.1/conv.1.0/Conv_output_0 1 48 8 8
+shape /features/features.4/conv/conv.1/conv.1.2/Constant_output_0
+shape /features/features.4/conv/conv.1/conv.1.2/Constant_1_output_0
+shape /features/features.4/conv/conv.1/conv.1.2/Clip_output_0 1 48 8 8
+shape /features/features.4/conv/conv.2/Conv_output_0 1 8 8 8
+shape /features/features.5/conv/conv.0/conv.0.0/Conv_output_0 1 48 8 8
+shape /features/features.5/conv/conv.0/conv.0.2/Constant_output_0
+shape /features/features.5/conv/conv.0/conv.0.2/Constant_1_output_0
+shape /features/features.5/conv/conv.0/conv.0.2/Clip_output_0 1 48 8 8
+shape /features/features.5/conv/conv.1/conv.1.0/Conv_output_0 1 48 8 8
+shape /features/features.5/conv/conv.1/conv.1.2/Constant_output_0
+shape /features/features.5/conv/conv.1/conv.1.2/Constant_1_output_0
+shape /features/features.5/conv/conv.1/conv.1.2/Clip_output_0 1 48 8 8
+shape /features/features.5/conv/conv.2/Conv_output_0 1 8 8 8
+shape /features/features.5/Add_output_0 1 8 8 8
+shape /features/features.6/conv/conv.0/conv.0.0/Conv_output_0 1 48 8 8
+shape /features/features.6/conv/conv.0/conv.0.2/Constant_output_0
+shape /features/features.6/conv/conv.0/conv.0.2/Constant_1_output_0
+shape /features/features.6/conv/conv.0/conv.0.2/Clip_output_0 1 48 8 8
+shape /features/features.6/conv/conv.1/conv.1.0/Conv_output_0 1 48 8 8
+shape /features/features.6/conv/conv.1/conv.1.2/Constant_output_0
+shape /features/features.6/conv/conv.1/conv.1.2/Constant_1_output_0
+shape /features/features.6/conv/conv.1/conv.1.2/Clip_output_0 1 48 8 8
+shape /features/features.6/conv/conv.2/Conv_output_0 1 8 8 8
+shape /features/features.6/Add_output_0 1 8 8 8
+shape /features/features.7/conv/conv.0/conv.0.0/Conv_output_0 1 48 8 8
+shape /features/features.7/conv/conv.0/conv.0.2/Constant_output_0
+shape /features/features.7/conv/conv.0/conv.0.2/Constant_1_output_0
+shape /features/features.7/conv/conv.0/conv.0.2/Clip_output_0 1 48 8 8
+shape /features/features.7/conv/conv.1/conv.1.0/Conv_output_0 1 48 4 4
+shape /features/features.7/conv/conv.1/conv.1.2/Constant_output_0
+shape /features/features.7/conv/conv.1/conv.1.2/Constant_1_output_0
+shape /features/features.7/conv/conv.1/conv.1.2/Clip_output_0 1 48 4 4
+shape /features/features.7/conv/conv.2/Conv_output_0 1 16 4 4
+shape /features/features.8/conv/conv.0/conv.0.0/Conv_output_0 1 96 4 4
+shape /features/features.8/conv/conv.0/conv.0.2/Constant_output_0
+shape /features/features.8/conv/conv.0/conv.0.2/Constant_1_output_0
+shape /features/features.8/conv/conv.0/conv.0.2/Clip_output_0 1 96 4 4
+shape /features/features.8/conv/conv.1/conv.1.0/Conv_output_0 1 96 4 4
+shape /features/features.8/conv/conv.1/conv.1.2/Constant_output_0
+shape /features/features.8/conv/conv.1/conv.1.2/Constant_1_output_0
+shape /features/features.8/conv/conv.1/conv.1.2/Clip_output_0 1 96 4 4
+shape /features/features.8/conv/conv.2/Conv_output_0 1 16 4 4
+shape /features/features.8/Add_output_0 1 16 4 4
+shape /features/features.9/conv/conv.0/conv.0.0/Conv_output_0 1 96 4 4
+shape /features/features.9/conv/conv.0/conv.0.2/Constant_output_0
+shape /features/features.9/conv/conv.0/conv.0.2/Constant_1_output_0
+shape /features/features.9/conv/conv.0/conv.0.2/Clip_output_0 1 96 4 4
+shape /features/features.9/conv/conv.1/conv.1.0/Conv_output_0 1 96 4 4
+shape /features/features.9/conv/conv.1/conv.1.2/Constant_output_0
+shape /features/features.9/conv/conv.1/conv.1.2/Constant_1_output_0
+shape /features/features.9/conv/conv.1/conv.1.2/Clip_output_0 1 96 4 4
+shape /features/features.9/conv/conv.2/Conv_output_0 1 16 4 4
+shape /features/features.9/Add_output_0 1 16 4 4
+shape /features/features.10/conv/conv.0/conv.0.0/Conv_output_0 1 96 4 4
+shape /features/features.10/conv/conv.0/conv.0.2/Constant_output_0
+shape /features/features.10/conv/conv.0/conv.0.2/Constant_1_output_0
+shape /features/features.10/conv/conv.0/conv.0.2/Clip_output_0 1 96 4 4
+shape /features/features.10/conv/conv.1/conv.1.0/Conv_output_0 1 96 4 4
+shape /features/features.10/conv/conv.1/conv.1.2/Constant_output_0
+shape /features/features.10/conv/conv.1/conv.1.2/Constant_1_output_0
+shape /features/features.10/conv/conv.1/conv.1.2/Clip_output_0 1 96 4 4
+shape /features/features.10/conv/conv.2/Conv_output_0 1 16 4 4
+shape /features/features.10/Add_output_0 1 16 4 4
+shape /features/features.11/conv/conv.0/conv.0.0/Conv_output_0 1 96 4 4
+shape /features/features.11/conv/conv.0/conv.0.2/Constant_output_0
+shape /features/features.11/conv/conv.0/conv.0.2/Constant_1_output_0
+shape /features/features.11/conv/conv.0/conv.0.2/Clip_output_0 1 96 4 4
+shape /features/features.11/conv/conv.1/conv.1.0/Conv_output_0 1 96 4 4
+shape /features/features.11/conv/conv.1/conv.1.2/Constant_output_0
+shape /features/features.11/conv/conv.1/conv.1.2/Constant_1_output_0
+shape /features/features.11/conv/conv.1/conv.1.2/Clip_output_0 1 96 4 4
+shape /features/features.11/conv/conv.2/Conv_output_0 1 24 4 4
+shape /features/features.12/conv/conv.0/conv.0.0/Conv_output_0 1 144 4 4
+shape /features/features.12/conv/conv.0/conv.0.2/Constant_output_0
+shape /features/features.12/conv/conv.0/conv.0.2/Constant_1_output_0
+shape /features/features.12/conv/conv.0/conv.0.2/Clip_output_0 1 144 4 4
+shape /features/features.12/conv/conv.1/conv.1.0/Conv_output_0 1 144 4 4
+shape /features/features.12/conv/conv.1/conv.1.2/Constant_output_0
+shape /features/features.12/conv/conv.1/conv.1.2/Constant_1_output_0
+shape /features/features.12/conv/conv.1/conv.1.2/Clip_output_0 1 144 4 4
+shape /features/features.12/conv/conv.2/Conv_output_0 1 24 4 4
+shape /features/features.12/Add_output_0 1 24 4 4
+shape /features/features.13/conv/conv.0/conv.0.0/Conv_output_0 1 144 4 4
+shape /features/features.13/conv/conv.0/conv.0.2/Constant_output_0
+shape /features/features.13/conv/conv.0/conv.0.2/Constant_1_output_0
+shape /features/features.13/conv/conv.0/conv.0.2/Clip_output_0 1 144 4 4
+shape /features/features.13/conv/conv.1/conv.1.0/Conv_output_0 1 144 4 4
+shape /features/features.13/conv/conv.1/conv.1.2/Constant_output_0
+shape /features/features.13/conv/conv.1/conv.1.2/Constant_1_output_0
+shape /features/features.13/conv/conv.1/conv.1.2/Clip_output_0 1 144 4 4
+shape /features/features.13/conv/conv.2/Conv_output_0 1 24 4 4
+shape /features/features.13/Add_output_0 1 24 4 4
+shape /features/features.14/conv/conv.0/conv.0.0/Conv_output_0 1 144 4 4
+shape /features/features.14/conv/conv.0/conv.0.2/Constant_output_0
+shape /features/features.14/conv/conv.0/conv.0.2/Constant_1_output_0
+shape /features/features.14/conv/conv.0/conv.0.2/Clip_output_0 1 144 4 4
+shape /features/features.14/conv/conv.1/conv.1.0/Conv_output_0 1 144 2 2
+shape /features/features.14/conv/conv.1/conv.1.2/Constant_output_0
+shape /features/features.14/conv/conv.1/conv.1.2/Constant_1_output_0
+shape /features/features.14/conv/conv.1/conv.1.2/Clip_output_0 1 144 2 2
+shape /features/features.14/conv/conv.2/Conv_output_0 1 40 2 2
+shape /features/features.15/conv/conv.0/conv.0.0/Conv_output_0 1 240 2 2
+shape /features/features.15/conv/conv.0/conv.0.2/Constant_output_0
+shape /features/features.15/conv/conv.0/conv.0.2/Constant_1_output_0
+shape /features/features.15/conv/conv.0/conv.0.2/Clip_output_0 1 240 2 2
+shape /features/features.15/conv/conv.1/conv.1.0/Conv_output_0 1 240 2 2
+shape /features/features.15/conv/conv.1/conv.1.2/Constant_output_0
+shape /features/features.15/conv/conv.1/conv.1.2/Constant_1_output_0
+shape /features/features.15/conv/conv.1/conv.1.2/Clip_output_0 1 240 2 2
+shape /features/features.15/conv/conv.2/Conv_output_0 1 40 2 2
+shape /features/features.15/Add_output_0 1 40 2 2
+shape /features/features.16/conv/conv.0/conv.0.0/Conv_output_0 1 240 2 2
+shape /features/features.16/conv/conv.0/conv.0.2/Constant_output_0
+shape /features/features.16/conv/conv.0/conv.0.2/Constant_1_output_0
+shape /features/features.16/conv/conv.0/conv.0.2/Clip_output_0 1 240 2 2
+shape /features/features.16/conv/conv.1/conv.1.0/Conv_output_0 1 240 2 2
+shape /features/features.16/conv/conv.1/conv.1.2/Constant_output_0
+shape /features/features.16/conv/conv.1/conv.1.2/Constant_1_output_0
+shape /features/features.16/conv/conv.1/conv.1.2/Clip_output_0 1 240 2 2
+shape /features/features.16/conv/conv.2/Conv_output_0 1 40 2 2
+shape /features/features.16/Add_output_0 1 40 2 2
+shape /features/features.17/conv/conv.0/conv.0.0/Conv_output_0 1 240 2 2
+shape /features/features.17/conv/conv.0/conv.0.2/Constant_output_0
+shape /features/features.17/conv/conv.0/conv.0.2/Constant_1_output_0
+shape /features/features.17/conv/conv.0/conv.0.2/Clip_output_0 1 240 2 2
+shape /features/features.17/conv/conv.1/conv.1.0/Conv_output_0 1 240 2 2
+shape /features/features.17/conv/conv.1/conv.1.2/Constant_output_0
+shape /features/features.17/conv/conv.1/conv.1.2/Constant_1_output_0
+shape /features/features.17/conv/conv.1/conv.1.2/Clip_output_0 1 240 2 2
+shape /features/features.17/conv/conv.2/Conv_output_0 1 80 2 2
+shape /features/features.18/features.18.0/Conv_output_0 1 1280 2 2
+shape /features/features.18/features.18.2/Constant_output_0
+shape /features/features.18/features.18.2/Constant_1_output_0
+shape /features/features.18/features.18.2/Clip_output_0 1 1280 2 2
+shape /GlobalAveragePool_output_0 1 1280 1 1
+shape /Flatten_output_0 1 1280
+shape y 1 10
+end
+model mobilenet_v2_small__dynamo.onnx dynamo torch 2.14.1 opset 20
+input x 1 3 64 64
+ops Add:11 Clip:35 Conv:52 Gemm:1 ReduceMean:1 Reshape:1
+expect compiles
+shape getitem 1 8 32 32
+shape hardtanh 1 8 32 32
+shape getitem_3 1 8 32 32
+shape hardtanh_1 1 8 32 32
+shape getitem_6 1 8 32 32
+shape add 1 8 32 32
+shape getitem_9 1 48 32 32
+shape hardtanh_2 1 48 32 32
+shape getitem_12 1 48 16 16
+shape hardtanh_3 1 48 16 16
+shape getitem_15 1 8 16 16
+shape getitem_18 1 48 16 16
+shape hardtanh_4 1 48 16 16
+shape getitem_21 1 48 16 16
+shape hardtanh_5 1 48 16 16
+shape getitem_24 1 8 16 16
+shape add_1 1 8 16 16
+shape getitem_27 1 48 16 16
+shape hardtanh_6 1 48 16 16
+shape getitem_30 1 48 8 8
+shape hardtanh_7 1 48 8 8
+shape getitem_33 1 8 8 8
+shape getitem_36 1 48 8 8
+shape hardtanh_8 1 48 8 8
+shape getitem_39 1 48 8 8
+shape hardtanh_9 1 48 8 8
+shape getitem_42 1 8 8 8
+shape add_2 1 8 8 8
+shape getitem_45 1 48 8 8
+shape hardtanh_10 1 48 8 8
+shape getitem_48 1 48 8 8
+shape hardtanh_11 1 48 8 8
+shape getitem_51 1 8 8 8
+shape add_3 1 8 8 8
+shape getitem_54 1 48 8 8
+shape hardtanh_12 1 48 8 8
+shape getitem_57 1 48 4 4
+shape hardtanh_13 1 48 4 4
+shape getitem_60 1 16 4 4
+shape getitem_63 1 96 4 4
+shape hardtanh_14 1 96 4 4
+shape getitem_66 1 96 4 4
+shape hardtanh_15 1 96 4 4
+shape getitem_69 1 16 4 4
+shape add_4 1 16 4 4
+shape getitem_72 1 96 4 4
+shape hardtanh_16 1 96 4 4
+shape getitem_75 1 96 4 4
+shape hardtanh_17 1 96 4 4
+shape getitem_78 1 16 4 4
+shape add_5 1 16 4 4
+shape getitem_81 1 96 4 4
+shape hardtanh_18 1 96 4 4
+shape getitem_84 1 96 4 4
+shape hardtanh_19 1 96 4 4
+shape getitem_87 1 16 4 4
+shape add_6 1 16 4 4
+shape getitem_90 1 96 4 4
+shape hardtanh_20 1 96 4 4
+shape getitem_93 1 96 4 4
+shape hardtanh_21 1 96 4 4
+shape getitem_96 1 24 4 4
+shape getitem_99 1 144 4 4
+shape hardtanh_22 1 144 4 4
+shape getitem_102 1 144 4 4
+shape hardtanh_23 1 144 4 4
+shape getitem_105 1 24 4 4
+shape add_7 1 24 4 4
+shape getitem_108 1 144 4 4
+shape hardtanh_24 1 144 4 4
+shape getitem_111 1 144 4 4
+shape hardtanh_25 1 144 4 4
+shape getitem_114 1 24 4 4
+shape add_8 1 24 4 4
+shape getitem_117 1 144 4 4
+shape hardtanh_26 1 144 4 4
+shape getitem_120 1 144 2 2
+shape hardtanh_27 1 144 2 2
+shape getitem_123 1 40 2 2
+shape getitem_126 1 240 2 2
+shape hardtanh_28 1 240 2 2
+shape getitem_129 1 240 2 2
+shape hardtanh_29 1 240 2 2
+shape getitem_132 1 40 2 2
+shape add_9 1 40 2 2
+shape getitem_135 1 240 2 2
+shape hardtanh_30 1 240 2 2
+shape getitem_138 1 240 2 2
+shape hardtanh_31 1 240 2 2
+shape getitem_141 1 40 2 2
+shape add_10 1 40 2 2
+shape getitem_144 1 240 2 2
+shape hardtanh_32 1 240 2 2
+shape getitem_147 1 240 2 2
+shape hardtanh_33 1 240 2 2
+shape getitem_150 1 80 2 2
+shape getitem_153 1 1280 2 2
+shape hardtanh_34 1 1280 2 2
+shape mean 1 1280 1 1
+shape view 1 1280
+shape y 1 10
+end

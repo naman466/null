@@ -5,12 +5,21 @@
 # both must agree with onnx runtime, and with each other bit for bit
 #
 #   cmake -DNULLC=<nullc> -DMODEL=<model.onnx> -DVECTORS=<file.vectors>
-#         -DDRIVER=<run_vectors.c> -DOUT=<dir> -DCC=<c compiler> -P run_e2e.cmake
+#         -DDRIVER=<run_vectors.c> -DOUT=<dir> -DCC=<c compiler>
+#         [-DTOLERANCE=<atol>,<rtol>] -P run_e2e.cmake
 
 file(MAKE_DIRECTORY "${OUT}")
 get_filename_component(name "${VECTORS}" NAME_WE)
 
 # -ffp-contract=off: the same arithmetic on every compiler (see the runtime header)
+set(tolerance "")
+if(TOLERANCE)
+    string(REPLACE "," ";" parts "${TOLERANCE}")
+    list(GET parts 0 atol)
+    list(GET parts 1 rtol)
+    set(tolerance "-DATOL=${atol}" "-DRTOL=${rtol}")
+endif()
+
 set(libm "")
 if(UNIX)
     set(libm "-lm")
@@ -36,7 +45,7 @@ foreach(variant opt noopt)
 
     execute_process(
         COMMAND "${CC}" -std=c99 -O2 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror
-                "${c_file}" "${DRIVER}" -o "${exe}" ${libm}
+                ${tolerance} "${c_file}" "${DRIVER}" -o "${exe}" ${libm}
         RESULT_VARIABLE code OUTPUT_VARIABLE out ERROR_VARIABLE err)
     if(NOT code EQUAL 0)
         message(FATAL_ERROR "building the generated model (${variant}) failed:\n${out}${err}")

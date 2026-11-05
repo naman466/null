@@ -34,6 +34,7 @@ import collections, os, warnings
 import onnx
 import torch
 import torch.nn as nn
+import torchvision
 from onnx import shape_inference
 
 warnings.filterwarnings("ignore")
@@ -81,6 +82,28 @@ class ConvBN(nn.Module):
         return self.f(x)
 
 
+def mobilenet_v2_small():
+    """torchvision's MobileNetV2 at a quarter of its width, with weights an untrained network would not
+    have: torchvision's own initialisation, through 52 layers and batch norms with default statistics,
+    shrinks the logits to about 1e-8, too small for an end-to-end test to tell right from wrong. so the
+    convolutions keep the signal's size (fan-in), the batch norms get statistics like a trained network's,
+    and the classifier spreads the logits over a few units"""
+    m = torchvision.models.mobilenet_v2(weights=None, width_mult=0.25, num_classes=10)
+    with torch.no_grad():
+        for mod in m.modules():
+            if isinstance(mod, nn.Conv2d):
+                nn.init.kaiming_normal_(mod.weight, mode="fan_in", nonlinearity="relu")
+            elif isinstance(mod, nn.BatchNorm2d):
+                mod.running_mean.uniform_(-0.1, 0.1)
+                mod.running_var.uniform_(0.5, 1.5)
+                mod.weight.uniform_(0.8, 1.2)
+                mod.bias.uniform_(-0.1, 0.1)
+            elif isinstance(mod, nn.Linear):
+                nn.init.normal_(mod.weight, std=1.0 / mod.in_features ** 0.5)
+                nn.init.normal_(mod.bias, std=0.01)
+    return m
+
+
 def no_rule(op):
     return f"({op}): no shape inference rule for this operator yet"
 
@@ -96,6 +119,12 @@ FIXTURES = [
     ("conv_bn__dynamo.onnx",      ConvBN,  (1, 3, 32, 32), "dynamo", False, ("compiles", "")),
     ("transformer__dynamo.onnx",  lambda: nn.TransformerEncoderLayer(d_model=32, nhead=4, dim_feedforward=64, batch_first=True),
                                            (1, 8, 32),     "dynamo", False, ("compiles", "")),
+    # MobileNetV2 at a quarter of its width, 10 classes, 64x64: every kind of layer of the full network
+    # (inverted residuals, depthwise convolutions, ReLU6, residual adds) in a fixture small enough to commit
+    ("mobilenet_v2_small__legacy.onnx", mobilenet_v2_small,
+                                           (1, 3, 64, 64), "legacy", False, ("compiles", "")),
+    ("mobilenet_v2_small__dynamo.onnx", mobilenet_v2_small,
+                                           (1, 3, 64, 64), "dynamo", False, ("compiles", "")),
 ]
 
 

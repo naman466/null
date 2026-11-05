@@ -176,7 +176,8 @@ file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated_models")
 foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable foldable optionals
               pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy pytorch/mlp_view__legacy_dyn
               pytorch/lenet__legacy pytorch/lenet__dynamo
-              pytorch/conv_bn__legacy pytorch/conv_bn__dynamo pytorch/transformer__dynamo)
+              pytorch/conv_bn__legacy pytorch/conv_bn__dynamo pytorch/transformer__dynamo
+              pytorch/mobilenet_v2_small__legacy pytorch/mobilenet_v2_small__dynamo)
     string(REPLACE "/" "_" test_name "${model}")
     add_test(NAME codegen_${test_name}
         COMMAND ${CMAKE_COMMAND}
@@ -198,9 +199,16 @@ add_cli_test(output_written 0 "wrote .*mlp_cli.c" "${FIXTURES}/mlp.onnx" --batch
 foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable foldable optionals
               pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy pytorch/mlp_view__legacy_dyn
               pytorch/lenet__legacy pytorch/lenet__dynamo
-              pytorch/conv_bn__legacy pytorch/conv_bn__dynamo pytorch/transformer__dynamo)
+              pytorch/conv_bn__legacy pytorch/conv_bn__dynamo pytorch/transformer__dynamo
+              pytorch/mobilenet_v2_small__legacy pytorch/mobilenet_v2_small__dynamo)
     string(REPLACE "/" "__" vectors "${model}")
     string(REPLACE "/" "_" test_name "${model}")
+    # MobileNetV2 is 52 layers deep: nullc and onnx runtime are each about 2.5e-5
+    # from the network evaluated in float64, so they may differ by twice that
+    set(tolerance "")
+    if(model MATCHES "mobilenet")
+        set(tolerance "-DTOLERANCE=1e-5,1e-4")
+    endif()
     add_test(NAME e2e_${test_name}
         COMMAND ${CMAKE_COMMAND}
             "-DNULLC=$<TARGET_FILE:nullc>"
@@ -209,5 +217,6 @@ foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable f
             "-DDRIVER=${CMAKE_CURRENT_SOURCE_DIR}/tests/e2e/run_vectors.c"
             "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/e2e"
             "-DCC=${CMAKE_C_COMPILER}"
+            ${tolerance}
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_e2e.cmake")
 endforeach()

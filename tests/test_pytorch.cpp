@@ -164,7 +164,7 @@ TEST(pytorch_manifest_matches_files) {
     std::vector<std::string> listed;
     for (auto& [file, _] : manifest()) listed.push_back(file);
     CHECK_EQ(files, listed);
-    CHECK(files.size() >= 9u);
+    CHECK(files.size() >= 11u);
 }
 
 TEST(pytorch_mlp_legacy_dynamic)       { check_model("mlp__legacy_dyn.onnx"); }
@@ -173,6 +173,8 @@ TEST(pytorch_mlp_view_legacy)          { check_model("mlp_view__legacy.onnx"); }
 TEST(pytorch_mlp_view_legacy_dynamic)  { check_model("mlp_view__legacy_dyn.onnx"); }
 TEST(pytorch_lenet_legacy)             { check_model("lenet__legacy.onnx"); }
 TEST(pytorch_lenet_dynamo)             { check_model("lenet__dynamo.onnx"); }
+TEST(pytorch_mobilenet_v2_small_legacy) { check_model("mobilenet_v2_small__legacy.onnx"); }
+TEST(pytorch_mobilenet_v2_small_dynamo) { check_model("mobilenet_v2_small__dynamo.onnx"); }
 
 TEST(pytorch_weights_held_once) {
     // a real model's weights live in initializers only: value_info has the

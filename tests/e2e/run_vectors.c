@@ -18,8 +18,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* a model can be given looser bounds with -DATOL= and -DRTOL= (see CMakeLists.txt) */
+#ifndef ATOL
 #define ATOL 1e-6
+#endif
+#ifndef RTOL
 #define RTOL 1e-5
+#endif
 
 extern const int model_run_num_inputs;
 extern const int model_run_num_outputs;
