@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cfloat>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -58,7 +60,8 @@ const char* runtime_part(OpType op) {
         case OpType::Add:
         case OpType::Sub:
         case OpType::Mul:
-        case OpType::Div:     return "elementwise";
+        case OpType::Div:
+        case OpType::Clip:    return "elementwise";
         case OpType::Gemm:
         case OpType::MatMul:  return "matmul";
         case OpType::Softmax: return "softmax";
@@ -292,6 +295,7 @@ private:
                 body_ << "    null_relu_f32(" << x << ", " << y << ", " << info(n.outputs[0]).num_elements() << ");\n";
                 break;
             }
+            case OpType::Clip: emit_clip(n); break;
             case OpType::Add: emit_binary(n, "add"); break;
             case OpType::Sub: emit_binary(n, "sub"); break;
             case OpType::Mul: emit_binary(n, "mul"); break;
@@ -474,6 +478,43 @@ private:
                << (dims.empty() ? "0" : int_list(dims)) << "}, {" << (flags.empty() ? "0" : int_list(flags))
                << "}};\n";
         body_ << "    null_reduce_mean_f32(" << x << ", " << y << ", &" << params << ");\n";
+    }
+
+    // a float scalar known at compile time: an initializer, or a Constant node
+    // (which the optimiser turns into an initializer, but --no-opt does not)
+    std::optional<float> constant_float(const std::string& name) const {
+        const Tensor* t = nullptr;
+        if (auto it = g_.initializers.find(name); it != g_.initializers.end()) t = &it->second;
+        for (const Node& c : g_.nodes)
+            if (!t && !c.is_dead && c.op == OpType::Constant && !c.outputs.empty() && c.outputs[0] == name) {
+                if (c.has_attr("value_float")) return c.attr_float("value_float");
+                if (c.has_attr("value")) t = &c.get_attr("value").as_tensor();
+            }
+        if (!t || t->dtype != DType::FLOAT32 || t->num_elements() != 1 || t->data.size() != sizeof(float))
+            return std::nullopt;
+        float v;
+        std::memcpy(&v, t->data.data(), sizeof v);
+        return v;
+    }
+
+    // Clip(x, min?, max?) with bounds known at compile time. a missing bound
+    // is the most negative or most positive finite float: the onnx spec says
+    // they default to numeric_limits lowest() and max(), so even a Clip with
+    // no bounds turns infinities into finite numbers (onnxruntime agrees; the
+    // onnx reference evaluator keeps them)
+    void emit_clip(const Node& n) {
+        float bound[2] = {-FLT_MAX, FLT_MAX};
+        for (size_t i = 1; i < 3; ++i) {
+            if (i >= n.inputs.size() || n.inputs[i].empty()) continue;
+            std::optional<float> v = constant_float(n.inputs[i]);
+            const char* which = i == 1 ? "min" : "max";
+            if (!v) fail(where(n) + ": the " + which + " bound must be a float constant known at compile time");
+            if (std::isnan(*v)) fail(where(n) + ": a NaN " + which + " bound is not supported");
+            bound[i - 1] = *v;
+        }
+        std::string x = read(n, 0), y = write(n, 0);
+        body_ << "    null_clip_f32(" << x << ", " << y << ", " << info(n.outputs[0]).num_elements() << ", "
+              << c_float_literal(bound[0]) << ", " << c_float_literal(bound[1]) << ");\n";
     }
 
     void emit_layernorm(const Node& n) {

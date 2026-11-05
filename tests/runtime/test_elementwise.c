@@ -150,7 +150,35 @@ static void test_bcast_in_place(void) {
     CHECK(all_equal(x, want, 6));
 }
 
+static void test_clip(void) {
+    /* relu6, and a one-sided bound */
+    float x[6] = {-2, 0, 3, 6, 7.5f, 100}, y[6];
+    float want6[6] = {0, 0, 3, 6, 6, 6}, want_lo[6] = {-1, 0, 3, 6, 7.5f, 100};
+    null_clip_f32(x, y, 6, 0.0f, 6.0f);
+    CHECK(all_equal(y, want6, 6));
+    null_clip_f32(x, y, 6, -1.0f, INFINITY);
+    CHECK(all_equal(y, want_lo, 6));
+    /* in place */
+    null_clip_f32(x, x, 6, 0.0f, 6.0f);
+    CHECK(all_equal(x, want6, 6));
+}
+
+static void test_clip_special_values(void) {
+    /* NaN passes through; -0.0 is kept, as relu keeps it; infinities are clipped
+       like any number; with min > max every output is max */
+    float nan = NAN;
+    float x[5] = {nan, -0.0f, INFINITY, -INFINITY, 1}, y[5];
+    float want[5] = {nan, -0.0f, 6, 0, 1}, crossed[5] = {2, 2, 2, 2, 2};
+    null_clip_f32(x, y, 5, 0.0f, 6.0f);
+    CHECK(y[0] != y[0]);
+    CHECK(all_equal(y + 1, want + 1, 4));
+    null_clip_f32(x + 1, y, 4, 5.0f, 2.0f);
+    CHECK(all_equal(y, crossed, 4));
+}
+
 static void run_elementwise_tests(void) {
+    test_clip();
+    test_clip_special_values();
     test_relu();
     test_relu_special_values();
     test_binary_flat();

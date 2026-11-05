@@ -1,5 +1,5 @@
 /*
- * null runtime, elementwise: relu and the binary operators, with and without broadcasting
+ * null runtime, elementwise: relu, clip and the binary operators, with and without broadcasting
  * needs null/core.h first; include runtime/null_runtime.h to get every part
  */
 #ifndef NULL_RUNTIME_ELEMENTWISE_H
@@ -16,6 +16,22 @@
 static inline void null_relu_f32(const float* x, float* y, int64_t n) {
     int64_t i;
     for (i = 0; i < n; ++i) y[i] = x[i] < 0.0f ? 0.0f : x[i];
+}
+
+/*
+ * y = min(max(x, lo), hi), elementwise; ReLU6 is lo = 0, hi = 6. the compiler
+ * passes the largest finite floats for a missing bound, as onnx defines it,
+ * so infinities are clipped even then. as with relu, the comparisons are written so that
+ * NaN passes through unchanged, and -0.0 is kept. when lo > hi every output
+ * is hi, as the onnx specification says: the max with lo is taken first.
+ * y may alias x.
+ */
+static inline void null_clip_f32(const float* x, float* y, int64_t n, float lo, float hi) {
+    int64_t i;
+    for (i = 0; i < n; ++i) {
+        float v = x[i] < lo ? lo : x[i];
+        y[i] = v > hi ? hi : v;
+    }
 }
 
 /* ---------------------------------------------------------------------------

@@ -244,6 +244,7 @@ TEST(fixture_external_data)          { check_fixture("external_data.onnx"); }
 TEST(fixture_hostile_names)          { check_fixture("hostile_names.onnx"); }
 TEST(fixture_optimizable)            { check_fixture("optimizable.onnx"); }
 TEST(fixture_foldable)               { check_fixture("foldable.onnx"); }
+TEST(fixture_no_kernel)              { check_fixture("no_kernel.onnx"); }
 
 TEST(fixture_cnn_details) {
     // spot checks on values the manifest doesn't capture

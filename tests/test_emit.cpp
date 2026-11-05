@@ -508,6 +508,62 @@ TEST(emit_skips_what_no_output_needs) {
     CHECK(contains(c, "null_relu_f32(in_x, t_y, 4);"));
 }
 
+// x[4] -> Clip(x, min, max) -> y; a bound is an initializer when given a
+// value, "" when omitted
+static Graph clip_graph(const std::string& min, const std::string& max) {
+    Graph g("clip");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {4}, DType::FLOAT32));
+    for (const auto& [name, value] : {std::pair<std::string, float>{"lo", 0.0f}, {"hi", 6.0f}}) {
+        Tensor t(name, {}, DType::FLOAT32);
+        t.set_float_data({value});
+        t.shape = {};
+        g.add_initializer(t);
+    }
+    g.add_node(Node("clip", OpType::Clip, {"x", min, max}, {"y"}));
+    infer_shapes(g);
+    return g;
+}
+
+TEST(emit_clip) {
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    CHECK(contains(emit_c(clip_graph("lo", "hi"), opt), "null_clip_f32(in_x, t_y, 4, 0x0p+0f, 0x1.800000p+2f);"));
+    // an omitted bound is the largest finite float on that side, as onnx defines it
+    CHECK(contains(emit_c(clip_graph("", "hi"), opt), "null_clip_f32(in_x, t_y, 4, -0x1.fffffep+127f, 0x1.800000p+2f);"));
+    CHECK(contains(emit_c(clip_graph("lo", ""), opt), "null_clip_f32(in_x, t_y, 4, 0x0p+0f, 0x1.fffffep+127f);"));
+
+    // a bound from a Constant node, as an unoptimised graph has it
+    Graph k("clip");
+    k.inputs = {"x"};
+    k.outputs = {"y"};
+    k.add_value_info(Tensor("x", {4}, DType::FLOAT32));
+    Node six("six", OpType::Constant, {}, {"hi"});
+    Tensor v("v", {}, DType::FLOAT32);
+    v.set_float_data({6.0f});
+    v.shape = {};
+    six.add_attr("value", v);
+    k.add_node(six);
+    k.add_node(Node("clip", OpType::Clip, {"x", "", "hi"}, {"y"}));
+    infer_shapes(k);
+    CHECK(contains(emit_c(k, opt), "null_clip_f32(in_x, t_y, 4, -0x1.fffffep+127f, 0x1.800000p+2f);"));
+
+    // a bound computed at run time, or NaN, is refused
+    Graph run("clip");
+    run.inputs = {"x", "m"};
+    run.outputs = {"y"};
+    run.add_value_info(Tensor("x", {4}, DType::FLOAT32));
+    run.add_value_info(Tensor("m", {}, DType::FLOAT32));
+    run.add_node(Node("clip", OpType::Clip, {"x", "m"}, {"y"}));
+    infer_shapes(run);
+    CHECK(contains(emit_error(run), "node 'clip' (Clip): the min bound must be a float constant known at compile time"));
+    Graph nan = clip_graph("lo", "hi");
+    float q = NAN;
+    std::memcpy(nan.initializers.at("hi").data.data(), &q, 4);
+    CHECK(contains(emit_error(nan), "a NaN max bound is not supported"));
+}
+
 TEST(emit_fused_relu) {
     // a Gemm or Conv carrying the optimiser's kFusedRelu passes 1 to its kernel
     Graph g("fused");
@@ -661,13 +717,15 @@ TEST(emit_errors) {
     infer_shapes(dynamic);
     CHECK(contains(emit_error(dynamic), "tensor 'x' has dynamic shape float32[?, 4]"));
 
-    Graph unsupported("clip");
+    Graph unsupported("cast");
     unsupported.inputs = {"x"};
     unsupported.outputs = {"y"};
     unsupported.add_value_info(Tensor("x", {4}, DType::FLOAT32));
-    unsupported.add_node(Node("c", OpType::Clip, {"x"}, {"y"}));
+    Node cast("c", OpType::Cast, {"x"}, {"y"});
+    cast.add_attr("to", int64_t{1});
+    unsupported.add_node(cast);
     infer_shapes(unsupported);
-    CHECK(contains(emit_error(unsupported), "node 'c' (Clip): no code generation for this operator yet"));
+    CHECK(contains(emit_error(unsupported), "node 'c' (Cast): no code generation for this operator yet"));
 
     Graph ints("ints");
     ints.inputs = {"x"};

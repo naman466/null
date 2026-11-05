@@ -114,3 +114,8 @@ init bias_b 1 ae6ff786f8b28d0e 4
 init gain_flat 1 9dedbcc871d214f9 4
 init gain_shape 7 bd36edcd222d23a0 2
 end
+model no_kernel.onnx ok 14 17 no_kernel
+input x 1 4
+output y 1 4
+node Cast x y to
+end
