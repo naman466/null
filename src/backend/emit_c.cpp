@@ -191,6 +191,13 @@ private:
         }
         if (auto it = g_.initializers.find(name); it != g_.initializers.end())
             return emit_constant(n, name, it->second);
+        // a Constant node's value, as an unoptimised graph has it: emitted on
+        // first use like an initializer, so a value only read at compile time
+        // (a Clip bound) leaves no array behind for -Werror to reject
+        for (const Node& c : g_.nodes)
+            if (!c.is_dead && c.op == OpType::Constant && !c.outputs.empty() && c.outputs[0] == name &&
+                c.has_attr("value"))
+                return emit_constant(n, name, c.get_attr("value").as_tensor());
         fail(where(n) + ": input '" + name + "' has no value");
     }
 
@@ -365,8 +372,6 @@ private:
     // float constants become weights; others (shape tensors) are only used at compile time
     void emit_constant_node(const Node& n) {
         if (!n.has_attr("value")) fail(where(n) + ": only Constant with a 'value' tensor is supported");
-        const Tensor& t = n.get_attr("value").as_tensor();
-        if (t.dtype == DType::FLOAT32) emit_constant(n, n.outputs.at(0), t);
         body_ << "    /* " << comment_text(n.outputs[0]) << " is a compile-time constant */\n";
     }
 

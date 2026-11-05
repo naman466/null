@@ -548,6 +548,16 @@ TEST(emit_clip) {
     k.add_node(Node("clip", OpType::Clip, {"x", "", "hi"}, {"y"}));
     infer_shapes(k);
     CHECK(contains(emit_c(k, opt), "null_clip_f32(in_x, t_y, 4, -0x1.fffffep+127f, 0x1.800000p+2f);"));
+    // read only at compile time, the Constant leaves no array behind: an
+    // unused static const array fails -Werror (MobileNetV2 unoptimised had 70)
+    CHECK(!contains(emit_c(k, opt), "static const float"));
+    // while a Constant a kernel reads becomes a weight, when it is first read
+    k.outputs = {"z"};
+    k.add_node(Node("add", OpType::Add, {"y", "hi"}, {"z"}));
+    infer_shapes(k);
+    std::string used = emit_c(k, opt);
+    CHECK(contains(used, "static const float w_hi[1]"));
+    CHECK(contains(used, "null_add_bcast_f32(t_y, w_hi, t_z,"));
 
     // a bound computed at run time, or NaN, is refused
     Graph run("clip");
