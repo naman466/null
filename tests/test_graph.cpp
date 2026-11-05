@@ -17,6 +17,12 @@ TEST(graph_initializer_lookup) {
     CHECK(w->is_constant);
     CHECK_EQ(w->num_elements(), 8);
     CHECK(g.get_tensor_info("missing") == nullptr);
+
+    // ...but only as metadata: the data is held once, in initializers
+    CHECK(w->data.empty());
+    CHECK_EQ(g.initializers.at("W").data.size(), size_t{8 * 4});
+    CHECK_EQ(w->shape, g.initializers.at("W").shape);
+    CHECK_EQ(w->dtype, g.initializers.at("W").dtype);
 }
 
 TEST(graph_input_lookup) {

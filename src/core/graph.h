@@ -24,7 +24,8 @@ public:
     std::vector<Node> nodes;
 
     // value info, tensor metadata
-    // maps tensor name -> Tensor (shape/dtype info, no data)
+    // maps tensor name -> Tensor (shape/dtype info; no data, except the small
+    // int64 values shape inference computes, which have no other home)
     std::unordered_map<std::string, Tensor> value_info;
 
     // initializers, constant tensors (model weights, biases)
@@ -51,12 +52,14 @@ public:
     }
 
     // add an initializer (constant tensor), also adds to value info
+    // the data lives in initializers only; value_info gets the metadata
+    // (name, shape, type, is_constant), so a model's weights are held once
     void add_initializer(Tensor t) {
         t.is_constant = true;
-        std::string n = t.name;
-        // add to value info
-        value_info[n] = t;
-        initializers[n] = std::move(t);
+        Tensor meta(t.name, t.shape, t.dtype);
+        meta.is_constant = true;
+        value_info[t.name] = std::move(meta);
+        initializers[t.name] = std::move(t);
     }
 
     bool is_initializer(const std::string& name) const {

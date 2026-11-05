@@ -173,6 +173,18 @@ TEST(pytorch_mlp_view_legacy)          { check_model("mlp_view__legacy.onnx"); }
 TEST(pytorch_mlp_view_legacy_dynamic)  { check_model("mlp_view__legacy_dyn.onnx"); }
 TEST(pytorch_lenet_legacy)             { check_model("lenet__legacy.onnx"); }
 TEST(pytorch_lenet_dynamo)             { check_model("lenet__dynamo.onnx"); }
+
+TEST(pytorch_weights_held_once) {
+    // a real model's weights live in initializers only: value_info has the
+    // metadata, and no copy of the 241 KB
+    Model m = load_model(dir() + "/lenet__legacy.onnx");
+    size_t in_value_info = 0, in_initializers = 0;
+    for (const auto& [name, t] : m.graph.value_info) in_value_info += t.data.size();
+    for (const auto& [name, t] : m.graph.initializers) in_initializers += t.data.size();
+    CHECK_EQ(in_value_info, size_t{0});
+    CHECK(in_initializers > 240000);
+    for (const auto& [name, t] : m.graph.initializers) CHECK(m.graph.get_tensor_info(name) != nullptr);
+}
 TEST(pytorch_conv_bn_legacy)           { check_model("conv_bn__legacy.onnx"); }
 TEST(pytorch_conv_bn_dynamo)           { check_model("conv_bn__dynamo.onnx"); }
 TEST(pytorch_transformer_dynamo)       { check_model("transformer__dynamo.onnx"); }
