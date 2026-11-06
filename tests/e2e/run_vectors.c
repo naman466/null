@@ -9,8 +9,8 @@
  *
  * linked with a generated model.c, through its array-form entry point.
  * an output element passes when |got - ref| <= ATOL + RTOL * |ref| (numpy's
- * allclose), NaN must match NaN, and for [1, C] outputs the index of the
- * largest value (the predicted class) must agree.
+ * allclose), NaN must match NaN, an infinity must match exactly, and for
+ * [1, C] outputs the index of the largest value (the predicted class) must agree.
  */
 #include <math.h>
 #include <stdint.h>
@@ -88,7 +88,17 @@ int main(int argc, char** argv) {
                 double g = out[k][i], r = ref[k][i], err = fabs(g - r);
                 ++checked;
                 if (isnan(r) || isnan(g)) {
-                    if (isnan(r) != isnan(g)) ++bad;
+                    if (!isnan(r) || !isnan(g)) ++bad;
+                    continue;
+                }
+                /* an infinity must be matched exactly: |inf - inf| is NaN, which
+                   no tolerance comparison would reject */
+                if (isinf(r) || isinf(g)) {
+                    if (g != r) {
+                        if (bad < 3) printf("  trial %d output %d element %lld: got %.9g, onnxruntime %.9g\n",
+                                            t, k, (long long)i, g, r);
+                        ++bad;
+                    }
                     continue;
                 }
                 if (err > worst_abs) worst_abs = err;

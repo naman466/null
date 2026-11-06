@@ -1,5 +1,5 @@
 /*
- * null runtime, elementwise: relu, clip, sigmoid, tanh and the binary operators, with and without broadcasting
+ * null runtime, elementwise: relu, clip, sigmoid, tanh, exp, log, sqrt, abs, neg and the binary operators, with and without broadcasting
  * needs null/core.h first; include runtime/null_runtime.h to get every part
  */
 #ifndef NULL_RUNTIME_ELEMENTWISE_H
@@ -65,6 +65,36 @@ static inline void null_tanh_f32(const float* x, float* y, int64_t n) {
     int64_t i;
     for (i = 0; i < n; ++i) y[i] = tanhf(x[i]);
 }
+
+/*
+ * the rest of the one-input functions, each by the C library or the plain
+ * operator, so the special values are IEEE's:
+ *   exp:  exp(-inf) = 0, exp(+inf) = +inf, overflow above ~88.7 gives +inf;
+ *         expf is not correctly rounded
+ *   log:  log(0) = -inf (either zero), log(x < 0) = NaN, log(+inf) = +inf;
+ *         logf is not correctly rounded
+ *   sqrt: sqrt(-0) = -0, sqrt(x < 0) = NaN; correctly rounded, as IEEE 754
+ *         requires, so the optimiser may fold it
+ *   abs:  clears the sign bit, so abs(-0) = +0; exact
+ *   neg:  flips the sign bit, so neg(+0) = -0; exact
+ * NaN passes through all five. y may alias x.
+ */
+#define NULL_DEFINE_UNARY_F32(name, expr)                                          \
+    static inline void null_##name##_f32(const float* x, float* y, int64_t n) {     \
+        int64_t i;                                                                  \
+        for (i = 0; i < n; ++i) {                                                   \
+            float v = x[i];                                                         \
+            y[i] = (expr);                                                          \
+        }                                                                           \
+    }
+
+NULL_DEFINE_UNARY_F32(exp, expf(v))
+NULL_DEFINE_UNARY_F32(log, logf(v))
+NULL_DEFINE_UNARY_F32(sqrt, sqrtf(v))
+NULL_DEFINE_UNARY_F32(abs, fabsf(v))
+NULL_DEFINE_UNARY_F32(neg, -v)
+
+#undef NULL_DEFINE_UNARY_F32
 
 /* ---------------------------------------------------------------------------
  * binary elementwise, with and without broadcasting

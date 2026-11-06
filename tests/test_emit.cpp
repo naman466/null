@@ -590,6 +590,27 @@ TEST(emit_sigmoid_tanh) {
     CHECK(!contains(c, "runtime/null/matmul.h"));
 }
 
+TEST(emit_exp_log_sqrt_abs_neg) {
+    // x[5] -> Exp -> Log -> Sqrt -> Abs -> Neg -> y: one elementwise call each
+    Graph g("unary");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {5}, DType::FLOAT32));
+    g.add_node(Node("exp", OpType::Exp, {"x"}, {"a"}));
+    g.add_node(Node("log", OpType::Log, {"a"}, {"b"}));
+    g.add_node(Node("sqrt", OpType::Sqrt, {"b"}, {"c"}));
+    g.add_node(Node("abs", OpType::Abs, {"c"}, {"d"}));
+    g.add_node(Node("neg", OpType::Neg, {"d"}, {"y"}));
+    infer_shapes(g);
+    std::string c = emit_c(g);
+    CHECK(contains(c, "null_exp_f32(in_x, t_a, 5);"));
+    CHECK(contains(c, "null_log_f32(t_a, t_b, 5);"));
+    CHECK(contains(c, "null_sqrt_f32(t_b, t_c, 5);"));
+    CHECK(contains(c, "null_abs_f32(t_c, t_d, 5);"));
+    CHECK(contains(c, "null_neg_f32(t_d, t_y, 5);"));
+    CHECK(contains(c, "runtime/null/elementwise.h, embedded"));
+}
+
 TEST(emit_fused_relu) {
     // a Gemm or Conv carrying the optimiser's kFusedRelu passes 1 to its kernel
     Graph g("fused");

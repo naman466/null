@@ -2,20 +2,25 @@
 that include NaN, infinities, -0.0 and large values, checked against numpy
 and onnxruntime.
 
-Clip, with bounds from initializers or Constant nodes, missing on either
-side, infinite, or crossed (min > max), must be identical to numpy and to
-onnxruntime (with -0.0 and +0.0 treated as equal, and any NaN as any NaN).
-A missing Clip bound is the largest finite float, as the onnx spec defines it
-(and onnxruntime does; the onnx reference evaluator keeps infinities instead).
+The operators take turns: Clip, Sigmoid, Tanh, Exp, Log, Sqrt, Abs, Neg.
 
-Sigmoid and Tanh call the C library's expf and tanhf, which are not correctly
-rounded, so for them the arbiter is the true value: numpy in float64, rounded
-once to float32. nullc must be within MAX_ULPS of it everywhere, tiny results
-included. onnxruntime cannot be held to that: its Sigmoid is a fast
-approximation with an absolute error of about 6e-8 (its sigmoid(-15) is
-3.58e-7 against a true 3.06e-7, and below about -17 it returns 0), so it is
-only checked to be within an absolute MAX_ABS of the true value. The script
-reports the largest distance each was seen at."""
+Clip, Abs, Neg and Sqrt must be identical to numpy and to onnxruntime (with
+-0.0 and +0.0 treated as equal, and any NaN as any NaN): the first three are
+exact, and sqrt is correctly rounded by IEEE 754. Clip's bounds come from
+initializers or Constant nodes, missing on either side, infinite, or crossed
+(min > max). A missing Clip bound is the largest finite float, as the onnx
+spec defines it (and onnxruntime does; the onnx reference evaluator keeps
+infinities instead). Log and Sqrt get mostly non-negative inputs.
+
+Sigmoid, Tanh, Exp and Log call the C library's expf, tanhf and logf, which
+are not correctly rounded, so for them the arbiter is the true value: numpy
+in float64, rounded once to float32. nullc must be within MAX_ULPS of it
+everywhere, tiny results included, and so must onnxruntime's Exp and Log.
+onnxruntime's Sigmoid cannot be held to that: it is a fast approximation with
+an absolute error of about 6e-8 (its sigmoid(-15) is 3.58e-7 against a true
+3.06e-7, and below about -17 it returns 0), so Sigmoid and Tanh, whose
+outputs lie in [-1, 1], hold onnxruntime only to an absolute MAX_ABS. The
+script reports the largest distance each was seen at."""
 import os
 import sys
 import warnings
@@ -28,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # python -I lea
 from common import parse_args, compile_model, output_shape, run_generated, run_ort, ulps
 
 warnings.filterwarnings("ignore")
-args = parse_args(__doc__, 300, "elementwise")
+args = parse_args(__doc__, 400, "elementwise")
 rng = np.random.default_rng(1105)
 MAX_ULPS = 4
 MAX_ABS = 2.5e-7          # 4 ulp at 1, the largest output either can give
@@ -81,18 +86,31 @@ def sigmoid64(x):
     return np.asarray(np.where(np.isnan(x), np.nan, y), np.float32)
 
 
+def in64(f):
+    """f evaluated in float64, rounded once to float32"""
+    def g(x):
+        with np.errstate(all="ignore"):
+            return np.asarray(f(x.astype(np.float64)), np.float32)
+    return g
+
+
+TRUTH = {"Sigmoid": sigmoid64, "Tanh": in64(np.tanh), "Exp": in64(np.exp), "Log": in64(np.log),
+         "Sqrt": in64(np.sqrt), "Abs": np.abs, "Neg": np.negative}
+EXACT = {"Abs", "Neg", "Sqrt"}         # sqrt in float64 rounded once is the correctly rounded float32 sqrt
+BOUNDED = {"Sigmoid", "Tanh"}          # outputs within [-1, 1]: onnxruntime held to MAX_ABS
+
+
 def unary_case(op):
-    """a Sigmoid or Tanh model, and the true answer, rounded once to float32"""
-    nodes = [helper.make_node(op, ["x"], ["y"], name=op.lower())]
-    f = sigmoid64 if op == "Sigmoid" else (lambda x: np.asarray(np.tanh(x.astype(np.float64)), np.float32))
-    return nodes, [], f, op
+    """a one-input model, and the true answer"""
+    return [helper.make_node(op, ["x"], ["y"], name=op.lower())], [], TRUTH[op], op
 
 
 stats = dict(ok=0, fail=0)
-worst = {"Sigmoid": [0, 0.0], "Tanh": [0, 0.0]}               # nullc in ulps, onnxruntime absolute
+OPS = ["Clip", "Sigmoid", "Tanh", "Exp", "Log", "Sqrt", "Abs", "Neg"]
+worst = {op: [0, 0.0 if op in BOUNDED else 0] for op in OPS[1:]}         # nullc in ulps; onnxruntime absolute (BOUNDED) or in ulps
 for k in range(args.count):
     shape = [int(d) for d in rng.integers(1, 6, int(rng.integers(0, 5)))]
-    op = ["Clip", "Sigmoid", "Tanh"][k % 3]
+    op = OPS[k % len(OPS)]
     nodes, inits, want, what = clip_case() if op == "Clip" else unary_case(op)
     g = helper.make_graph(nodes, "g", [helper.make_tensor_value_info("x", TensorProto.FLOAT, shape)],
                           [helper.make_tensor_value_info("y", TensorProto.FLOAT, shape)], inits)
@@ -109,6 +127,8 @@ for k in range(args.count):
         print(f"e{k:03d}: nullc refuses ({what}): {err.strip()[:150]}")
         continue
     x = random_input(shape)
+    if op in ("Log", "Sqrt") and rng.random() < 0.7:
+        x = np.where(np.isnan(x), x, np.abs(x)).astype(np.float32)   # mostly in the domain; -0.0 becomes +0.0
     got = run_generated(args.cc, c_file, x, output_shape(c_file), d)
     ref, rerr = run_ort(model, x)
     if ref is None:
@@ -116,14 +136,19 @@ for k in range(args.count):
         print(f"e{k:03d}: {what}: onnxruntime refuses: {rerr[:80]}")
         continue
     truth = want(x)
-    if op == "Clip":
+    if op == "Clip" or op in EXACT:
+        if op != "Clip":
+            worst[op] = [max(worst[op][0], ulps(got, truth)), max(worst[op][1], ulps(ref, truth))]
         bad = ulps(got, truth) != 0 or ulps(got, ref) != 0
-    else:
+    elif op in BOUNDED:
         worst[op][0] = max(worst[op][0], ulps(got, truth))
         ok_nan = np.array_equal(np.isnan(ref), np.isnan(truth))
         diff = float(np.abs(np.where(np.isnan(truth), 0, ref.astype(np.float64) - truth)).max()) if ok_nan else np.inf
         worst[op][1] = max(worst[op][1], diff)
         bad = ulps(got, truth) > MAX_ULPS or diff > MAX_ABS
+    else:
+        worst[op] = [max(worst[op][0], ulps(got, truth)), max(worst[op][1], ulps(ref, truth))]
+        bad = ulps(got, truth) > MAX_ULPS or ulps(ref, truth) > MAX_ULPS
     if bad:
         stats["fail"] += 1
         print(f"e{k:03d}: {what}: nullc {ulps(got, truth)} ulp from numpy, onnxruntime {ulps(ref, truth)} ulp")
@@ -131,6 +156,7 @@ for k in range(args.count):
     stats["ok"] += 1
 
 for op, (n, o) in worst.items():
-    print(f"{op}: largest distance from float64, nullc {n} ulp, onnxruntime {o:.2g} absolute")
-print(f"{args.count} random Clip, Sigmoid and Tanh models: {stats['ok']} pass, {stats['fail']} failures")
+    print(f"{op}: largest distance from the true value, nullc {n} ulp, onnxruntime "
+          + (f"{o:.2g} absolute" if op in BOUNDED else f"{o} ulp"))
+print(f"{args.count} random models, {len(OPS)} operators: {stats['ok']} pass, {stats['fail']} failures")
 raise SystemExit(1 if stats["fail"] else 0)

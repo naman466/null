@@ -230,7 +230,69 @@ static void test_tanh_special_values(void) {
     CHECK(same_bits(y[4], 0.0f));
 }
 
+static void test_exp_log(void) {
+    /* exact where the answer is, within an ulp or two of double elsewhere */
+    float x[5] = {0.0f, 1.0f, -3.5f, 10.0f, 0.25f}, y[5], back[5];
+    int i;
+    null_exp_f32(x, y, 5);
+    CHECK(y[0] == 1.0f);
+    for (i = 1; i < 5; ++i) CHECK(fabs(y[i] - exp((double)x[i])) <= 2.5e-7 * exp((double)x[i]));
+    null_log_f32(y, back, 5);                 /* log(exp(x)) is x, to rounding */
+    CHECK(back[0] == 0.0f);
+    for (i = 1; i < 5; ++i) CHECK(fabs(back[i] - x[i]) <= 1e-6 * (1.0 + fabs(x[i])));
+    null_exp_f32(x, x, 5);                    /* in place */
+    CHECK(all_equal(x, y, 5));
+}
+
+static void test_exp_log_special_values(void) {
+    float x[6] = {INFINITY, -INFINITY, NAN, 100.0f, -110.0f, -0.0f}, y[6];
+    float l[6] = {0.0f, -0.0f, -1.0f, INFINITY, NAN, 1.0f};
+    null_exp_f32(x, y, 6);
+    CHECK(y[0] == INFINITY);
+    CHECK(same_bits(y[1], 0.0f));
+    CHECK(y[2] != y[2]);
+    CHECK(y[3] == INFINITY);                  /* overflow */
+    CHECK(y[4] >= 0.0f && y[4] < 1e-37f);     /* underflow, to a subnormal or 0 */
+    CHECK(y[5] == 1.0f);
+    null_log_f32(l, y, 6);
+    CHECK(y[0] == -INFINITY && y[1] == -INFINITY);   /* both zeros */
+    CHECK(y[2] != y[2]);                             /* negative */
+    CHECK(y[3] == INFINITY);
+    CHECK(y[4] != y[4]);
+    CHECK(same_bits(y[5], 0.0f));
+}
+
+static void test_sqrt_abs_neg(void) {
+    /* all three exact here; sqrt is correctly rounded everywhere */
+    float x[6] = {4.0f, 2.0f, 0.0f, -0.0f, -9.0f, INFINITY}, y[6];
+    null_sqrt_f32(x, y, 6);
+    CHECK(y[0] == 2.0f);
+    CHECK(y[1] == (float)sqrt(2.0));          /* the double rounded once: the correctly rounded float */
+    CHECK(same_bits(y[2], 0.0f));
+    CHECK(same_bits(y[3], -0.0f));            /* sqrt(-0) = -0 */
+    CHECK(y[4] != y[4]);
+    CHECK(y[5] == INFINITY);
+
+    null_abs_f32(x, y, 6);
+    CHECK(y[0] == 4.0f && y[4] == 9.0f && y[5] == INFINITY);
+    CHECK(same_bits(y[3], 0.0f));             /* abs(-0) = +0 */
+    null_neg_f32(x, y, 6);
+    CHECK(y[0] == -4.0f && y[4] == 9.0f && y[5] == -INFINITY);
+    CHECK(same_bits(y[2], -0.0f));            /* neg(+0) = -0 */
+    CHECK(same_bits(y[3], 0.0f));
+
+    x[0] = NAN;                               /* NaN passes through, in place */
+    null_abs_f32(x, x, 1);
+    CHECK(x[0] != x[0]);
+    null_neg_f32(x, x, 1);
+    CHECK(x[0] != x[0]);
+    null_sqrt_f32(x, y, 0);
+}
+
 static void run_elementwise_tests(void) {
+    test_exp_log();
+    test_exp_log_special_values();
+    test_sqrt_abs_neg();
     test_sigmoid();
     test_sigmoid_special_values();
     test_tanh();

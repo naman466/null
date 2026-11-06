@@ -59,6 +59,11 @@ const char* runtime_part(OpType op) {
         case OpType::Relu:
         case OpType::Sigmoid:
         case OpType::Tanh:
+        case OpType::Exp:
+        case OpType::Log:
+        case OpType::Sqrt:
+        case OpType::Abs:
+        case OpType::Neg:
         case OpType::Add:
         case OpType::Sub:
         case OpType::Mul:
@@ -302,6 +307,11 @@ private:
             case OpType::Relu:    emit_unary(n, "relu"); break;
             case OpType::Sigmoid: emit_unary(n, "sigmoid"); break;
             case OpType::Tanh:    emit_unary(n, "tanh"); break;
+            case OpType::Exp:     emit_unary(n, "exp"); break;
+            case OpType::Log:     emit_unary(n, "log"); break;
+            case OpType::Sqrt:    emit_unary(n, "sqrt"); break;
+            case OpType::Abs:     emit_unary(n, "abs"); break;
+            case OpType::Neg:     emit_unary(n, "neg"); break;
             case OpType::Clip: emit_clip(n); break;
             case OpType::Add: emit_binary(n, "add"); break;
             case OpType::Sub: emit_binary(n, "sub"); break;

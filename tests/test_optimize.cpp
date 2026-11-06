@@ -326,12 +326,33 @@ TEST(opt_fold_float_operations) {
     CHECK(ones[0] == 1 && std::isnan(ones[1]) && ones[2] == 1);
     CHECK_EQ(floats(t, "mf"), (std::vector<float>{1, 2, 3, 4, 5, 6}));
     CHECK_EQ(t.initializers.at("mf").shape, (std::vector<int64_t>{6}));
+
+    // abs, neg and sqrt fold: exact, or correctly rounded
+    Graph u("u");
+    u.inputs = {"x"};
+    u.outputs = {"y1", "y2", "y3"};
+    u.add_value_info(Tensor("x", {1}, DType::FLOAT32));
+    add_floats(u, "v", {4}, {-4, 2, 0, -0.0f});
+    u.add_node(Node("abs", OpType::Abs, {"v"}, {"va"}));
+    u.add_node(Node("neg", OpType::Neg, {"v"}, {"vn"}));
+    u.add_node(Node("sqrt", OpType::Sqrt, {"va"}, {"vs"}));
+    u.add_node(Node("o1", OpType::Mul, {"x", "va"}, {"y1"}));
+    u.add_node(Node("o2", OpType::Mul, {"x", "vn"}, {"y2"}));
+    u.add_node(Node("o3", OpType::Mul, {"x", "vs"}, {"y3"}));
+    infer_shapes(u);
+    CHECK_EQ(fold_constants(u), size_t{3});
+    std::vector<float> va = floats(u, "va"), vn = floats(u, "vn"), vs = floats(u, "vs");
+    CHECK_EQ(va, (std::vector<float>{4, 2, 0, 0}));
+    CHECK(!std::signbit(va[3]));                                          // abs(-0) = +0
+    CHECK_EQ(vn, (std::vector<float>{4, -2, 0, 0}));
+    CHECK(std::signbit(vn[2]) && !std::signbit(vn[3]));                   // neg flips the zeros' signs
+    CHECK_EQ(vs, (std::vector<float>{2, std::sqrt(2.0f), 0, 0}));
 }
 
 TEST(opt_fold_refuses) {
     Graph g("r");
     g.inputs = {"x", "over"};
-    g.outputs = {"y1", "y2", "out", "y4", "y5", "y6"};
+    g.outputs = {"y1", "y2", "out", "y4", "y5", "y6", "y7", "y8"};
     g.add_value_info(Tensor("x", {1}, DType::FLOAT32));
     add_floats(g, "col", {2, 1}, {1, 2});
     add_floats(g, "row", {3}, {1, 2, 3});
@@ -350,6 +371,10 @@ TEST(opt_fold_refuses) {
     g.add_node(Node("o5", OpType::Mul, {"x", "s"}, {"y5"}));
     g.add_node(Node("tanh", OpType::Tanh, {"row"}, {"t"}));
     g.add_node(Node("o6", OpType::Mul, {"x", "t"}, {"y6"}));
+    g.add_node(Node("exp", OpType::Exp, {"row"}, {"e"}));                 // expf and logf likewise
+    g.add_node(Node("o7", OpType::Mul, {"x", "e"}, {"y7"}));
+    g.add_node(Node("log", OpType::Log, {"row"}, {"l"}));
+    g.add_node(Node("o8", OpType::Mul, {"x", "l"}, {"y8"}));
     infer_shapes(g);
     CHECK_EQ(fold_constants(g), size_t{0});
 }

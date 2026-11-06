@@ -108,6 +108,17 @@ std::optional<std::vector<float>> evaluate(const Graph& g, const Node& n, const 
         case OpType::Relu:
             null_relu_f32(a.data(), y.data(), static_cast<int64_t>(y.size()));
             return y;
+        // exact (abs and neg only touch the sign bit) or correctly rounded (sqrt,
+        // by IEEE 754); exp and log are neither, and wait for run time
+        case OpType::Abs:
+            null_abs_f32(a.data(), y.data(), static_cast<int64_t>(y.size()));
+            return y;
+        case OpType::Neg:
+            null_neg_f32(a.data(), y.data(), static_cast<int64_t>(y.size()));
+            return y;
+        case OpType::Sqrt:
+            null_sqrt_f32(a.data(), y.data(), static_cast<int64_t>(y.size()));
+            return y;
         case OpType::Add:
         case OpType::Sub:
         case OpType::Mul:

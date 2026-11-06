@@ -132,3 +132,18 @@ init b_i 1 c57dc995334cb41a 6
 init w_g 1 c5d3a6762712f4d3 6 8
 init b_g 1 d95b6b9a640698ba 6
 end
+model unary.onnx ok 14 17 unary
+input x 1 1 8
+output y 1 1 6
+node Gemm x,w_u,b_u h transB
+node Exp h e -
+node Add e,one e1 -
+node Log e1 softplus -
+node Abs h a -
+node Sqrt a r -
+node Neg r nr -
+node Add softplus,nr y -
+init w_u 1 efd8d6c14e669cec 6 8
+init b_u 1 6227930acd73c107 6
+init one 1 4b72477f9c5c2f98
+end
