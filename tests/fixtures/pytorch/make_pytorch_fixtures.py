@@ -82,13 +82,12 @@ class ConvBN(nn.Module):
         return self.f(x)
 
 
-def mobilenet_v2_small():
-    """torchvision's MobileNetV2 at a quarter of its width, with weights an untrained network would not
-    have: torchvision's own initialisation, through 52 layers and batch norms with default statistics,
-    shrinks the logits to about 1e-8, too small for an end-to-end test to tell right from wrong. so the
-    convolutions keep the signal's size (fan-in), the batch norms get statistics like a trained network's,
-    and the classifier spreads the logits over a few units"""
-    m = torchvision.models.mobilenet_v2(weights=None, width_mult=0.25, num_classes=10)
+def realistic_weights(m):
+    """weights an untrained network would not have: torchvision's own initialisation, through dozens of
+    layers and batch norms with default statistics, shrinks MobileNetV2's logits to about 1e-8, too small
+    for an end-to-end test to tell right from wrong. so the convolutions keep the signal's size (fan-in),
+    the batch norms get statistics like a trained network's, and the classifier spreads the logits over
+    a few units"""
     with torch.no_grad():
         for mod in m.modules():
             if isinstance(mod, nn.Conv2d):
@@ -102,6 +101,41 @@ def mobilenet_v2_small():
                 nn.init.normal_(mod.weight, std=1.0 / mod.in_features ** 0.5)
                 nn.init.normal_(mod.bias, std=0.01)
     return m
+
+
+def mobilenet_v2_small():
+    """torchvision's MobileNetV2 at a quarter of its width"""
+    return realistic_weights(torchvision.models.mobilenet_v2(weights=None, width_mult=0.25, num_classes=10))
+
+
+class ResNet18Small(nn.Module):
+    """ResNet-18 exactly as torchvision builds it (a 7x7 stem, a max pool, four stages of two basic
+    blocks with 1x1 downsampling shortcuts, a global average pool, a linear classifier), at an eighth of
+    its width: torchvision's ResNet class fixes the widths at 64..512, so the stages are assembled here
+    from its own BasicBlock"""
+    def __init__(self, widths=(8, 16, 32, 64), num_classes=10):
+        super().__init__()
+        from torchvision.models.resnet import BasicBlock
+        c = widths[0]
+        self.stem = nn.Sequential(nn.Conv2d(3, c, 7, 2, 3, bias=False), nn.BatchNorm2d(c), nn.ReLU(inplace=True),
+                                  nn.MaxPool2d(3, 2, 1))
+        stages = []
+        for i, w in enumerate(widths):
+            stride = 1 if i == 0 else 2
+            down = None
+            if stride != 1 or c != w:
+                down = nn.Sequential(nn.Conv2d(c, w, 1, stride, bias=False), nn.BatchNorm2d(w))
+            stages += [BasicBlock(c, w, stride, down), BasicBlock(w, w)]
+            c = w
+        self.stages = nn.Sequential(*stages)
+        self.head = nn.Sequential(nn.AdaptiveAvgPool2d(1), nn.Flatten(), nn.Linear(c, num_classes))
+
+    def forward(self, x):
+        return self.head(self.stages(self.stem(x)))
+
+
+def resnet18_small():
+    return realistic_weights(ResNet18Small())
 
 
 def no_rule(op):
@@ -124,6 +158,11 @@ FIXTURES = [
     ("mobilenet_v2_small__legacy.onnx", mobilenet_v2_small,
                                            (1, 3, 64, 64), "legacy", False, ("compiles", "")),
     ("mobilenet_v2_small__dynamo.onnx", mobilenet_v2_small,
+                                           (1, 3, 64, 64), "dynamo", False, ("compiles", "")),
+    # ResNet-18 at an eighth of its width, 10 classes, 64x64: the same 21 layers and 8 residual blocks
+    ("resnet18_small__legacy.onnx", resnet18_small,
+                                           (1, 3, 64, 64), "legacy", False, ("compiles", "")),
+    ("resnet18_small__dynamo.onnx", resnet18_small,
                                            (1, 3, 64, 64), "dynamo", False, ("compiles", "")),
 ]
 

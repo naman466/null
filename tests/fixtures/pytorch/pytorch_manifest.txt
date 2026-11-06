@@ -427,3 +427,111 @@ shape mean 1 1280 1 1
 shape view 1 1280
 shape y 1 10
 end
+model resnet18_small__legacy.onnx legacy torch 2.14.1 opset 20
+input x 1 3 64 64
+ops Add:8 Conv:20 Flatten:1 Gemm:1 GlobalAveragePool:1 MaxPool:1 Relu:17
+expect compiles
+shape /stem/stem.0/Conv_output_0 1 8 32 32
+shape /stem/stem.2/Relu_output_0 1 8 32 32
+shape /stem/stem.3/MaxPool_output_0 1 8 16 16
+shape /stages/stages.0/conv1/Conv_output_0 1 8 16 16
+shape /stages/stages.0/relu/Relu_output_0 1 8 16 16
+shape /stages/stages.0/conv2/Conv_output_0 1 8 16 16
+shape /stages/stages.0/Add_output_0 1 8 16 16
+shape /stages/stages.0/relu_1/Relu_output_0 1 8 16 16
+shape /stages/stages.1/conv1/Conv_output_0 1 8 16 16
+shape /stages/stages.1/relu/Relu_output_0 1 8 16 16
+shape /stages/stages.1/conv2/Conv_output_0 1 8 16 16
+shape /stages/stages.1/Add_output_0 1 8 16 16
+shape /stages/stages.1/relu_1/Relu_output_0 1 8 16 16
+shape /stages/stages.2/conv1/Conv_output_0 1 16 8 8
+shape /stages/stages.2/relu/Relu_output_0 1 16 8 8
+shape /stages/stages.2/conv2/Conv_output_0 1 16 8 8
+shape /stages/stages.2/downsample/downsample.0/Conv_output_0 1 16 8 8
+shape /stages/stages.2/Add_output_0 1 16 8 8
+shape /stages/stages.2/relu_1/Relu_output_0 1 16 8 8
+shape /stages/stages.3/conv1/Conv_output_0 1 16 8 8
+shape /stages/stages.3/relu/Relu_output_0 1 16 8 8
+shape /stages/stages.3/conv2/Conv_output_0 1 16 8 8
+shape /stages/stages.3/Add_output_0 1 16 8 8
+shape /stages/stages.3/relu_1/Relu_output_0 1 16 8 8
+shape /stages/stages.4/conv1/Conv_output_0 1 32 4 4
+shape /stages/stages.4/relu/Relu_output_0 1 32 4 4
+shape /stages/stages.4/conv2/Conv_output_0 1 32 4 4
+shape /stages/stages.4/downsample/downsample.0/Conv_output_0 1 32 4 4
+shape /stages/stages.4/Add_output_0 1 32 4 4
+shape /stages/stages.4/relu_1/Relu_output_0 1 32 4 4
+shape /stages/stages.5/conv1/Conv_output_0 1 32 4 4
+shape /stages/stages.5/relu/Relu_output_0 1 32 4 4
+shape /stages/stages.5/conv2/Conv_output_0 1 32 4 4
+shape /stages/stages.5/Add_output_0 1 32 4 4
+shape /stages/stages.5/relu_1/Relu_output_0 1 32 4 4
+shape /stages/stages.6/conv1/Conv_output_0 1 64 2 2
+shape /stages/stages.6/relu/Relu_output_0 1 64 2 2
+shape /stages/stages.6/conv2/Conv_output_0 1 64 2 2
+shape /stages/stages.6/downsample/downsample.0/Conv_output_0 1 64 2 2
+shape /stages/stages.6/Add_output_0 1 64 2 2
+shape /stages/stages.6/relu_1/Relu_output_0 1 64 2 2
+shape /stages/stages.7/conv1/Conv_output_0 1 64 2 2
+shape /stages/stages.7/relu/Relu_output_0 1 64 2 2
+shape /stages/stages.7/conv2/Conv_output_0 1 64 2 2
+shape /stages/stages.7/Add_output_0 1 64 2 2
+shape /stages/stages.7/relu_1/Relu_output_0 1 64 2 2
+shape /head/head.0/GlobalAveragePool_output_0 1 64 1 1
+shape /head/head.1/Flatten_output_0 1 64
+shape y 1 10
+end
+model resnet18_small__dynamo.onnx dynamo torch 2.14.1 opset 20
+input x 1 3 64 64
+ops Add:8 Conv:20 Gemm:1 MaxPool:1 ReduceMean:1 Relu:17 Reshape:1
+expect compiles
+shape getitem 1 8 32 32
+shape relu 1 8 32 32
+shape max_pool2d 1 8 16 16
+shape getitem_3 1 8 16 16
+shape relu_1 1 8 16 16
+shape getitem_6 1 8 16 16
+shape add 1 8 16 16
+shape relu_2 1 8 16 16
+shape getitem_9 1 8 16 16
+shape relu_3 1 8 16 16
+shape getitem_12 1 8 16 16
+shape add_1 1 8 16 16
+shape relu_4 1 8 16 16
+shape getitem_15 1 16 8 8
+shape relu_5 1 16 8 8
+shape getitem_18 1 16 8 8
+shape getitem_21 1 16 8 8
+shape add_2 1 16 8 8
+shape relu_6 1 16 8 8
+shape getitem_24 1 16 8 8
+shape relu_7 1 16 8 8
+shape getitem_27 1 16 8 8
+shape add_3 1 16 8 8
+shape relu_8 1 16 8 8
+shape getitem_30 1 32 4 4
+shape relu_9 1 32 4 4
+shape getitem_33 1 32 4 4
+shape getitem_36 1 32 4 4
+shape add_4 1 32 4 4
+shape relu_10 1 32 4 4
+shape getitem_39 1 32 4 4
+shape relu_11 1 32 4 4
+shape getitem_42 1 32 4 4
+shape add_5 1 32 4 4
+shape relu_12 1 32 4 4
+shape getitem_45 1 64 2 2
+shape relu_13 1 64 2 2
+shape getitem_48 1 64 2 2
+shape getitem_51 1 64 2 2
+shape add_6 1 64 2 2
+shape relu_14 1 64 2 2
+shape getitem_54 1 64 2 2
+shape relu_15 1 64 2 2
+shape getitem_57 1 64 2 2
+shape add_7 1 64 2 2
+shape relu_16 1 64 2 2
+shape mean 1 64 1 1
+shape view 1 64
+shape y 1 10
+end

@@ -177,7 +177,8 @@ foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable f
               pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy pytorch/mlp_view__legacy_dyn
               pytorch/lenet__legacy pytorch/lenet__dynamo
               pytorch/conv_bn__legacy pytorch/conv_bn__dynamo pytorch/transformer__dynamo
-              pytorch/mobilenet_v2_small__legacy pytorch/mobilenet_v2_small__dynamo)
+              pytorch/mobilenet_v2_small__legacy pytorch/mobilenet_v2_small__dynamo
+              pytorch/resnet18_small__legacy pytorch/resnet18_small__dynamo)
     string(REPLACE "/" "_" test_name "${model}")
     add_test(NAME codegen_${test_name}
         COMMAND ${CMAKE_COMMAND}
@@ -200,7 +201,8 @@ foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable f
               pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy pytorch/mlp_view__legacy_dyn
               pytorch/lenet__legacy pytorch/lenet__dynamo
               pytorch/conv_bn__legacy pytorch/conv_bn__dynamo pytorch/transformer__dynamo
-              pytorch/mobilenet_v2_small__legacy pytorch/mobilenet_v2_small__dynamo)
+              pytorch/mobilenet_v2_small__legacy pytorch/mobilenet_v2_small__dynamo
+              pytorch/resnet18_small__legacy pytorch/resnet18_small__dynamo)
     string(REPLACE "/" "__" vectors "${model}")
     string(REPLACE "/" "_" test_name "${model}")
     # MobileNetV2 is 52 layers deep: nullc and onnx runtime are each about 2.5e-5
@@ -208,6 +210,11 @@ foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable f
     set(tolerance "")
     if(model MATCHES "mobilenet")
         set(tolerance "-DTOLERANCE=1e-5,1e-4")
+    endif()
+    # ResNet-18's logits reach 15; both are about 5e-7 of that from float64, so
+    # the small logits beside them need an absolute 1e-5 (relative stays 1e-5)
+    if(model MATCHES "resnet18")
+        set(tolerance "-DTOLERANCE=1e-5,1e-5")
     endif()
     add_test(NAME e2e_${test_name}
         COMMAND ${CMAKE_COMMAND}
