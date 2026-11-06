@@ -173,7 +173,7 @@ add_cli_test(no_opt         0 "graph .optimizable.: 8 nodes, 6 initializers" "${
 # must accept the file as C99 with every warning an error. the output folder
 # is created at configure time, so any of these tests can run alone
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated_models")
-foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable foldable optionals
+foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable foldable optionals gate
               pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy pytorch/mlp_view__legacy_dyn
               pytorch/lenet__legacy pytorch/lenet__dynamo
               pytorch/conv_bn__legacy pytorch/conv_bn__dynamo pytorch/transformer__dynamo
@@ -197,7 +197,7 @@ add_cli_test(output_written 0 "wrote .*mlp_cli.c" "${FIXTURES}/mlp.onnx" --batch
 # end to end: compile each model with nullc -o, build the generated C with a
 # driver, run it on recorded inputs and compare with onnx runtime's outputs
 # (tests/fixtures/e2e/*.vectors, written by make_e2e_vectors.py)
-foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable foldable optionals
+foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable foldable optionals gate
               pytorch/mlp__legacy_dyn pytorch/mlp__dynamo_dyn pytorch/mlp_view__legacy pytorch/mlp_view__legacy_dyn
               pytorch/lenet__legacy pytorch/lenet__dynamo
               pytorch/conv_bn__legacy pytorch/conv_bn__dynamo pytorch/transformer__dynamo

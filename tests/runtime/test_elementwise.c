@@ -1,4 +1,4 @@
-/* tests for runtime/null/elementwise.h: relu and the binary operators; included by test_kernels.c */
+/* tests for runtime/null/elementwise.h: relu, clip, sigmoid, tanh and the binary operators; included by test_kernels.c */
 
 static void test_relu(void) {
     float x[6] = {-2.0f, -0.5f, 0.0f, 0.5f, 3.0f, -1e-30f};
@@ -176,7 +176,65 @@ static void test_clip_special_values(void) {
     CHECK(all_equal(y, crossed, 4));
 }
 
+static void test_sigmoid(void) {
+    /* exact where the answer is: sigmoid(0) = 0.5; the rest within an ulp or two
+       of the true value, computed in double; sigmoid(-x) = 1 - sigmoid(x) */
+    float x[7] = {0.0f, 1.0f, -1.0f, 4.0f, -4.0f, 20.0f, -20.0f}, y[7];
+    int i;
+    null_sigmoid_f32(x, y, 7);
+    CHECK(y[0] == 0.5f);
+    for (i = 1; i < 7; ++i) {
+        double want = 1.0 / (1.0 + exp(-(double)x[i]));
+        CHECK(fabs(y[i] - want) <= 2.5e-7 * want);
+    }
+    CHECK(fabs((double)y[1] + y[2] - 1.0) < 1e-7);
+    /* very negative x keeps its tiny result instead of rounding to 0: exp(-80) */
+    x[0] = -80.0f;
+    null_sigmoid_f32(x, y, 1);
+    CHECK(y[0] > 0.0f && fabs(y[0] - exp(-80.0)) <= 1e-6 * exp(-80.0));
+    /* in place */
+    x[0] = 0.0f;
+    null_sigmoid_f32(x, x, 7);
+    CHECK(x[0] == 0.5f && x[5] == y[5] && x[6] == y[6]);
+}
+
+static void test_sigmoid_special_values(void) {
+    /* the ends are exact, NaN passes through, -0 is 0.5 like +0, and nothing overflows */
+    float x[6] = {INFINITY, -INFINITY, NAN, -0.0f, 1000.0f, -1000.0f}, y[6];
+    null_sigmoid_f32(x, y, 6);
+    CHECK(y[0] == 1.0f);
+    CHECK(same_bits(y[1], 0.0f));
+    CHECK(y[2] != y[2]);
+    CHECK(y[3] == 0.5f);
+    CHECK(y[4] == 1.0f);
+    CHECK(same_bits(y[5], 0.0f));
+    null_sigmoid_f32(x, y, 0);
+}
+
+static void test_tanh(void) {
+    float x[6] = {0.5f, -0.5f, 2.0f, -3.0f, 10.0f, 1e-8f}, y[6];
+    int i;
+    null_tanh_f32(x, y, 6);
+    for (i = 0; i < 6; ++i) CHECK(fabs(y[i] - tanh((double)x[i])) <= 2.5e-7 * fabs(tanh((double)x[i])));
+    CHECK(y[0] == -y[1]);                     /* odd */
+    null_tanh_f32(x, x, 6);                   /* in place */
+    CHECK(all_equal(x, y, 6));
+}
+
+static void test_tanh_special_values(void) {
+    float x[5] = {INFINITY, -INFINITY, NAN, -0.0f, 0.0f}, y[5];
+    null_tanh_f32(x, y, 5);
+    CHECK(y[0] == 1.0f && y[1] == -1.0f);
+    CHECK(y[2] != y[2]);
+    CHECK(same_bits(y[3], -0.0f));            /* tanh keeps the sign of zero */
+    CHECK(same_bits(y[4], 0.0f));
+}
+
 static void run_elementwise_tests(void) {
+    test_sigmoid();
+    test_sigmoid_special_values();
+    test_tanh();
+    test_tanh_special_values();
     test_clip();
     test_clip_special_values();
     test_relu();

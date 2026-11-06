@@ -331,7 +331,7 @@ TEST(opt_fold_float_operations) {
 TEST(opt_fold_refuses) {
     Graph g("r");
     g.inputs = {"x", "over"};
-    g.outputs = {"y1", "y2", "out", "y4"};
+    g.outputs = {"y1", "y2", "out", "y4", "y5", "y6"};
     g.add_value_info(Tensor("x", {1}, DType::FLOAT32));
     add_floats(g, "col", {2, 1}, {1, 2});
     add_floats(g, "row", {3}, {1, 2, 3});
@@ -344,6 +344,12 @@ TEST(opt_fold_refuses) {
     g.add_node(Node("output", OpType::Relu, {"row"}, {"out"}));           // is a graph output
     g.add_node(Node("mm", OpType::MatMul, {"w", "w"}, {"sq"}));           // sums: left for run time
     g.add_node(Node("o4", OpType::Mul, {"x", "sq"}, {"y4"}));
+    // the C library's expf and tanhf are not correctly rounded: the compiler's
+    // libm need not give the target's bits, so these too wait for run time
+    g.add_node(Node("sig", OpType::Sigmoid, {"row"}, {"s"}));
+    g.add_node(Node("o5", OpType::Mul, {"x", "s"}, {"y5"}));
+    g.add_node(Node("tanh", OpType::Tanh, {"row"}, {"t"}));
+    g.add_node(Node("o6", OpType::Mul, {"x", "t"}, {"y6"}));
     infer_shapes(g);
     CHECK_EQ(fold_constants(g), size_t{0});
 }

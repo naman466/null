@@ -1,5 +1,5 @@
 /*
- * null runtime, elementwise: relu, clip and the binary operators, with and without broadcasting
+ * null runtime, elementwise: relu, clip, sigmoid, tanh and the binary operators, with and without broadcasting
  * needs null/core.h first; include runtime/null_runtime.h to get every part
  */
 #ifndef NULL_RUNTIME_ELEMENTWISE_H
@@ -32,6 +32,38 @@ static inline void null_clip_f32(const float* x, float* y, int64_t n, float lo, 
         float v = x[i] < lo ? lo : x[i];
         y[i] = v > hi ? hi : v;
     }
+}
+
+/*
+ * y = 1 / (1 + exp(-x)), elementwise. expf is only ever given a number <= 0,
+ * so nothing overflows: for x >= 0 it is 1 / (1 + exp(-x)), and for x < 0 the
+ * same value written as exp(x) / (1 + exp(x)), which keeps the small results
+ * of very negative x instead of rounding 1 + huge. sigmoid(+inf) = 1,
+ * sigmoid(-inf) = 0, and NaN fails x >= 0, so it reaches expf and comes out
+ * NaN. expf is not correctly rounded, so results can differ from other
+ * implementations in the last bit or two. y may alias x.
+ */
+static inline void null_sigmoid_f32(const float* x, float* y, int64_t n) {
+    int64_t i;
+    for (i = 0; i < n; ++i) {
+        float v = x[i];
+        if (v >= 0.0f) {
+            y[i] = 1.0f / (1.0f + expf(-v));
+        } else {
+            float e = expf(v);
+            y[i] = e / (1.0f + e);
+        }
+    }
+}
+
+/*
+ * y = tanh(x), elementwise, by the C library's tanhf: tanh(+-inf) = +-1,
+ * tanh(-0) = -0, NaN passes through. like expf, tanhf is not correctly
+ * rounded. y may alias x.
+ */
+static inline void null_tanh_f32(const float* x, float* y, int64_t n) {
+    int64_t i;
+    for (i = 0; i < n; ++i) y[i] = tanhf(x[i]);
 }
 
 /* ---------------------------------------------------------------------------

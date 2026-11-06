@@ -574,6 +574,22 @@ TEST(emit_clip) {
     CHECK(contains(emit_error(nan), "a NaN max bound is not supported"));
 }
 
+TEST(emit_sigmoid_tanh) {
+    // x[2, 3] -> Sigmoid -> Tanh -> y: one elementwise call each, from the elementwise part
+    Graph g("act");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {2, 3}, DType::FLOAT32));
+    g.add_node(Node("sig", OpType::Sigmoid, {"x"}, {"s"}));
+    g.add_node(Node("tanh", OpType::Tanh, {"s"}, {"y"}));
+    infer_shapes(g);
+    std::string c = emit_c(g);
+    CHECK(contains(c, "null_sigmoid_f32(in_x, t_s, 6);"));
+    CHECK(contains(c, "null_tanh_f32(t_s, t_y, 6);"));
+    CHECK(contains(c, "runtime/null/elementwise.h, embedded"));
+    CHECK(!contains(c, "runtime/null/matmul.h"));
+}
+
 TEST(emit_fused_relu) {
     // a Gemm or Conv carrying the optimiser's kFusedRelu passes 1 to its kernel
     Graph g("fused");

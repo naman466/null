@@ -57,6 +57,8 @@ std::string int_list(const std::vector<int64_t>& v) {
 const char* runtime_part(OpType op) {
     switch (op) {
         case OpType::Relu:
+        case OpType::Sigmoid:
+        case OpType::Tanh:
         case OpType::Add:
         case OpType::Sub:
         case OpType::Mul:
@@ -297,11 +299,9 @@ private:
         body_ << "    /* " << comment_text(n.name) << ": " << optype_to_str(n.op) << " */\n";
         if (const char* part = runtime_part(n.op)) parts_.insert(part);
         switch (n.op) {
-            case OpType::Relu: {
-                std::string x = read(n, 0), y = write(n, 0);
-                body_ << "    null_relu_f32(" << x << ", " << y << ", " << info(n.outputs[0]).num_elements() << ");\n";
-                break;
-            }
+            case OpType::Relu:    emit_unary(n, "relu"); break;
+            case OpType::Sigmoid: emit_unary(n, "sigmoid"); break;
+            case OpType::Tanh:    emit_unary(n, "tanh"); break;
             case OpType::Clip: emit_clip(n); break;
             case OpType::Add: emit_binary(n, "add"); break;
             case OpType::Sub: emit_binary(n, "sub"); break;
@@ -500,6 +500,12 @@ private:
         float v;
         std::memcpy(&v, t->data.data(), sizeof v);
         return v;
+    }
+
+    // y = f(x) elementwise, by null_<kernel>_f32(x, y, n)
+    void emit_unary(const Node& n, const char* kernel) {
+        std::string x = read(n, 0), y = write(n, 0);
+        body_ << "    null_" << kernel << "_f32(" << x << ", " << y << ", " << info(n.outputs[0]).num_elements() << ");\n";
     }
 
     // Clip(x, min?, max?) with bounds known at compile time. a missing bound
