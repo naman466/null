@@ -77,7 +77,8 @@ const char* runtime_part(OpType op) {
         case OpType::MaxPool: return "pool";
         case OpType::GlobalAveragePool:
         case OpType::ReduceMean: return "reduce";
-        case OpType::LayerNormalization: return "norm";
+        case OpType::LayerNormalization:
+        case OpType::BatchNormalization: return "norm";
         default:              return nullptr;    // Transpose and Gather add "layout" only when they call it
     }
 }
@@ -327,6 +328,7 @@ private:
             case OpType::GlobalAveragePool:
             case OpType::ReduceMean: emit_reduce_mean(n); break;
             case OpType::LayerNormalization: emit_layernorm(n); break;
+            case OpType::BatchNormalization: emit_batchnorm(n); break;
             case OpType::Transpose: emit_transpose(n); break;
             case OpType::Reshape:
             case OpType::Flatten:
@@ -555,6 +557,18 @@ private:
             fail(where(n) + ": a scale or bias that broadcasts within the normalized dims is not supported yet");
         body_ << "    null_layernorm_f32(" << x << ", " << scale << ", " << b << ", " << y << ", " << outer << ", "
               << count << ", " << c_float_literal(n.attr_float("epsilon", 1e-5f)) << ");\n";
+    }
+
+    // X viewed as [n, c, inner]; the four parameters have one value per channel
+    void emit_batchnorm(const Node& n) {
+        std::string x = read(n, 0), scale = read(n, 1), b = read(n, 2), mean = read(n, 3), var = read(n, 4);
+        std::string y = write(n, 0);
+        const auto& s = info(n.inputs[0]).shape;
+        int64_t inner = 1;
+        for (size_t i = 2; i < s.size(); ++i) inner *= s[i];
+        body_ << "    null_batchnorm_f32(" << x << ", " << scale << ", " << b << ", " << mean << ", " << var << ", " << y
+              << ", " << s[0] << ", " << s[1] << ", " << inner << ", "
+              << c_float_literal(n.attr_float("epsilon", 1e-5f)) << ");\n";
     }
 
     // dims of size 1 are dropped first: they cannot change the order of the

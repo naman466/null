@@ -751,6 +751,30 @@ std::vector<TypeInfo> layer_norm(const Context& c) {
     return {{c.in(0).dtype, x}};
 }
 
+// BatchNormalization(X, scale, B, input_mean, input_var), inference only: Y has
+// X's shape, and each of the four parameters is one value per channel, dim 1
+// of X. the training outputs (running_mean and running_var) and
+// training_mode = 1 are refused
+std::vector<TypeInfo> batch_norm(const Context& c) {
+    c.require_inputs(5, 5);
+    c.require_float(0);
+    for (size_t i = 1; i < c.node.outputs.size(); ++i)
+        if (!c.node.outputs[i].empty()) c.fail("the training outputs (running mean and variance) are not supported");
+    if (c.node.attr_int("training_mode", 0) != 0) c.fail("training_mode = 1 is not supported, only inference");
+    const std::vector<int64_t>& x = c.in(0).shape;
+    if (x.size() < 2) c.fail("input must have rank >= 2 (N, C, ...), got " + c.in(0).shape_str());
+    static const char* names[] = {"", "scale", "B", "input_mean", "input_var"};
+    for (size_t i = 1; i < 5; ++i) {
+        if (!c.has(i)) c.fail(std::string(names[i]) + " is required");
+        c.require_same_dtype(0, i);
+        const std::vector<int64_t>& s = c.in(i).shape;
+        if (s.size() != 1 || (s[0] >= 0 && x[1] >= 0 && s[0] != x[1]))
+            c.fail(std::string(names[i]) + " " + c.in(i).shape_str() + " must have one value per channel, [" +
+                   std::to_string(x[1]) + "]");
+    }
+    return {{c.in(0).dtype, x}};
+}
+
 // Transpose(data), perm (default: the dims reversed): output dim i is input
 // dim perm[i]
 std::vector<TypeInfo> transpose(const Context& c) {
@@ -802,6 +826,7 @@ const std::unordered_map<OpType, Rule>& rules() {
         {OpType::Squeeze,   squeeze},
         {OpType::Concat,    concat},
         {OpType::LayerNormalization, layer_norm},
+        {OpType::BatchNormalization, batch_norm},
         {OpType::Transpose,          transpose},
         {OpType::Conv,     conv},
         {OpType::MaxPool,  max_pool},

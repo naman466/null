@@ -429,6 +429,30 @@ TEST(emit_layernorm) {
     CHECK(contains(emit_error(narrow), "a scale or bias that broadcasts within the normalized dims is not supported yet"));
 }
 
+TEST(emit_batchnorm) {
+    // x[2, 3, 4, 5] viewed as [n 2, c 3, inner 20], one parameter value per channel
+    Graph g("bn");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {2, 3, 4, 5}, DType::FLOAT32));
+    for (const char* name : {"scale", "b", "mean", "var"}) {
+        Tensor t(name, {3}, DType::FLOAT32);
+        t.set_float_data({1, 2, 3});
+        g.add_initializer(t);
+    }
+    Node n("bn", OpType::BatchNormalization, {"x", "scale", "b", "mean", "var"}, {"y"});
+    n.add_attr("epsilon", 1e-3f);
+    g.add_node(n);
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(g, opt);
+    CHECK(contains(c, "null_batchnorm_f32(in_x, w_scale, w_b, w_mean, w_var, t_y, 2, 3, 20, 0x1.0624dep-10f);"));
+    // epsilon defaults to 1e-5, as onnx defines it
+    g.nodes[0].attrs.erase("epsilon");
+    CHECK(contains(emit_c(g, opt), ", 2, 3, 20, " + std::string(c_float_literal(1e-5f)) + ");"));
+}
+
 // splits generated C into its comments and the code between them, and checks
 // that each comment is closed by the first */ after it and holds only
 // printable ASCII (and line breaks) with no /* and no ?? inside

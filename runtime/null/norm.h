@@ -1,5 +1,5 @@
 /*
- * null runtime, norm: layer normalization
+ * null runtime, norm: layer and batch normalization
  * needs null/core.h first; include runtime/null_runtime.h to get every part
  */
 #ifndef NULL_RUNTIME_NORM_H
@@ -40,6 +40,34 @@ static inline void null_layernorm_f32(const float* x, const float* scale, const 
             double v = (xr[i] - mean) / sd * scale[i];
             if (bias) v += bias[i];
             yr[i] = (float)v;
+        }
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * batch normalization, inference
+ *
+ * the tensor is viewed as [n, c, inner]: channel k of every image is
+ * y = (x - mean[k]) / sqrt(var[k] + epsilon) * scale[k] + bias[k], with the
+ * mean and variance given (recorded during training), not computed.
+ *
+ * the formula is the specification's, taken in double and rounded to float
+ * once per output, like layer normalization's. sqrt(var + epsilon) is computed
+ * once per channel. a variance below -epsilon gives NaN for that channel, as
+ * the formula does; NaN and inf in x propagate to their own output only.
+ *
+ * y may alias x: each element is read before the same position is written.
+ * ------------------------------------------------------------------------ */
+static inline void null_batchnorm_f32(const float* x, const float* scale, const float* bias,
+                                      const float* mean, const float* var, float* y,
+                                      int64_t n, int64_t c, int64_t inner, float epsilon) {
+    int64_t b, k, i;
+    for (k = 0; k < c; ++k) {
+        const double sd = sqrt((double)var[k] + (double)epsilon);
+        const double m = mean[k], s = scale[k], t = bias[k];
+        for (b = 0; b < n; ++b) {
+            const int64_t base = (b * c + k) * inner;
+            for (i = 0; i < inner; ++i) y[base + i] = (float)((x[base + i] - m) / sd * s + t);
         }
     }
 }

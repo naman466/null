@@ -245,6 +245,7 @@ TEST(fixture_hostile_names)          { check_fixture("hostile_names.onnx"); }
 TEST(fixture_optimizable)            { check_fixture("optimizable.onnx"); }
 TEST(fixture_foldable)               { check_fixture("foldable.onnx"); }
 TEST(fixture_no_kernel)              { check_fixture("no_kernel.onnx"); }
+TEST(fixture_no_shape_rule)          { check_fixture("no_shape_rule.onnx"); }
 
 TEST(fixture_cnn_details) {
     // spot checks on values the manifest doesn't capture
@@ -306,13 +307,24 @@ TEST(fixture_shapes_linear_relu_optionals) {
     CHECK_EQ(opt.graph.get_tensor_info("y")->shape, (std::vector<int64_t>{3, 2}));
 }
 
-TEST(fixture_shapes_cnn_stops_after_conv) {
-    // Conv is supported, BatchNormalization (next in the graph) has no rule yet
+TEST(fixture_shapes_cnn) {
+    // Conv, BatchNormalization, Relu, MaxPool, GlobalAveragePool, Flatten, Gemm
     Model m = load_model(fixture_path("cnn.onnx"));
+    infer_shapes(m.graph);
+    auto shape = [&](const char* name) { return m.graph.get_tensor_info(name)->shape; };
+    CHECK_EQ(shape("c"), (std::vector<int64_t>{1, 4, 8, 8}));
+    CHECK_EQ(shape("b"), (std::vector<int64_t>{1, 4, 8, 8}));
+    CHECK_EQ(shape("p"), (std::vector<int64_t>{1, 4, 4, 4}));
+    CHECK_EQ(shape("y"), (std::vector<int64_t>{1, 2}));
+}
+
+TEST(fixture_shapes_no_rule) {
+    // an operator Null knows but has no shape rule for yet stops inference there
+    Model m = load_model(fixture_path("no_shape_rule.onnx"));
     try {
         infer_shapes(m.graph);
         throw std::runtime_error("expected ShapeError");
     } catch (const ShapeError& e) {
-        CHECK(std::string(e.what()).find("node 'BatchNormalization_1' (BatchNormalization): no shape inference rule") != std::string::npos);
+        CHECK(std::string(e.what()).find("node 'pool' (AveragePool): no shape inference rule") != std::string::npos);
     }
 }

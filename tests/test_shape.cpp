@@ -1016,6 +1016,38 @@ TEST(shape_layer_norm) {
     CHECK(contains(shape_error(ints), "must be float32 or float64"));
 }
 
+TEST(shape_batch_norm) {
+    // the output has X's shape; scale, B, mean and var have one value per channel (dim 1)
+    auto bn = [](const Shape& x, int64_t c) {
+        return one_node(OpType::BatchNormalization, {x, {c}, {c}, {c}, {c}});
+    };
+    Graph g = bn({1, 4, 8, 8}, 4);
+    infer_shapes(g);
+    CHECK_EQ(info(g, "out0").shape, (Shape{1, 4, 8, 8}));
+    Graph flat = bn({2, 3}, 3);                  // BatchNorm1d on [N, C]
+    infer_shapes(flat);
+    CHECK_EQ(info(flat, "out0").shape, (Shape{2, 3}));
+    Graph dyn = bn({-1, 4, 5}, 4);
+    infer_shapes(dyn);
+    CHECK_EQ(info(dyn, "out0").shape, (Shape{-1, 4, 5}));
+
+    Graph wrong = one_node(OpType::BatchNormalization, {{1, 4, 2}, {4}, {4}, {3}, {4}});
+    CHECK(contains(shape_error(wrong), "input_mean [3] must have one value per channel, [4]"));
+    Graph rank2 = one_node(OpType::BatchNormalization, {{1, 4, 2}, {4}, {4}, {4}, {1, 4}});
+    CHECK(contains(shape_error(rank2), "input_var [1, 4] must have one value per channel, [4]"));
+    Graph scalar = bn({4}, 4);
+    CHECK(contains(shape_error(scalar), "input must have rank >= 2 (N, C, ...), got [4]"));
+    Graph few = one_node(OpType::BatchNormalization, {{1, 4}, {4}, {4}, {4}});
+    CHECK(contains(shape_error(few), "5"));
+    Graph training = one_node(OpType::BatchNormalization, {{1, 4}, {4}, {4}, {4}, {4}}, DType::FLOAT32, 3);
+    CHECK(contains(shape_error(training), "the training outputs (running mean and variance) are not supported"));
+    Graph mode = bn({1, 4}, 4);
+    mode.nodes[0].add_attr("training_mode", int64_t{1});
+    CHECK(contains(shape_error(mode), "training_mode = 1 is not supported, only inference"));
+    Graph ints = one_node(OpType::BatchNormalization, {{1, 4}, {4}, {4}, {4}, {4}}, DType::INT64);
+    CHECK(contains(shape_error(ints), "must be float32 or float64"));
+}
+
 TEST(shape_transpose) {
     auto out = [](const Shape& x, const std::vector<int64_t>& perm) {
         Graph g = one_node(OpType::Transpose, {x});
