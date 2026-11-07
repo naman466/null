@@ -1,5 +1,5 @@
 /*
- * null runtime, elementwise: relu, clip, sigmoid, tanh, exp, log, sqrt, abs, neg and the binary operators, with and without broadcasting
+ * null runtime, elementwise: relu, clip, sigmoid, tanh, exp, log, sqrt, abs, neg, the binary operators and pow, with and without broadcasting
  * needs null/core.h first; include runtime/null_runtime.h to get every part
  */
 #ifndef NULL_RUNTIME_ELEMENTWISE_H
@@ -151,6 +151,14 @@ NULL_DEFINE_BINARY_F32(add, x0 + x1)
 NULL_DEFINE_BINARY_F32(sub, x0 - x1)
 NULL_DEFINE_BINARY_F32(mul, x0 * x1)
 NULL_DEFINE_BINARY_F32(div, x0 / x1)
+
+/*
+ * pow(a, b) by the C library's powf, whose special cases are IEEE 754's and
+ * numpy's: pow(x, +-0) = 1 and pow(1, y) = 1 even for NaN; a negative base
+ * with a non-integer exponent is NaN; pow(-2, 3) = -8; pow(+-0, -1) = +-inf.
+ * powf is not correctly rounded, so the optimiser does not fold it.
+ */
+NULL_DEFINE_BINARY_F32(pow, powf(x0, x1))
 
 #undef NULL_DEFINE_BINARY_F32
 

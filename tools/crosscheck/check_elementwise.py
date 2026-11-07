@@ -2,7 +2,11 @@
 that include NaN, infinities, -0.0 and large values, checked against numpy
 and onnxruntime.
 
-The operators take turns: Clip, Sigmoid, Tanh, Exp, Log, Sqrt, Abs, Neg.
+The operators take turns: Clip, Sigmoid, Tanh, Exp, Log, Sqrt, Abs, Neg, Pow.
+Pow's other operand is an initializer, a scalar (as exporters write x ** 2)
+or broadcast along the last dims, and is the exponent, or, a quarter of the
+time, the base with x as the exponent. Exponents include 0, 1/3, negative
+and non-integer values, so negative bases give NaN as numpy's do.
 
 Clip, Abs, Neg and Sqrt must be identical to numpy and to onnxruntime (with
 -0.0 and +0.0 treated as equal, and any NaN as any NaN): the first three are
@@ -12,10 +16,11 @@ initializers or Constant nodes, missing on either side, infinite, or crossed
 spec defines it (and onnxruntime does; the onnx reference evaluator keeps
 infinities instead). Log and Sqrt get mostly non-negative inputs.
 
-Sigmoid, Tanh, Exp and Log call the C library's expf, tanhf and logf, which
-are not correctly rounded, so for them the arbiter is the true value: numpy
-in float64, rounded once to float32. nullc must be within MAX_ULPS of it
-everywhere, tiny results included, and so must onnxruntime's Exp and Log.
+Sigmoid, Tanh, Exp, Log and Pow call the C library's expf, tanhf, logf and
+powf, which are not correctly rounded, so for them the arbiter is the true
+value: numpy in float64, rounded once to float32. nullc must be within
+MAX_ULPS of it everywhere, tiny results included, and so must onnxruntime's
+Exp, Log and Pow.
 onnxruntime's Sigmoid cannot be held to that: it is a fast approximation with
 an absolute error of about 6e-8 (its sigmoid(-15) is 3.58e-7 against a true
 3.06e-7, and below about -17 it returns 0), so Sigmoid and Tanh, whose
@@ -33,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # python -I lea
 from common import parse_args, compile_model, output_shape, run_generated, run_ort, ulps
 
 warnings.filterwarnings("ignore")
-args = parse_args(__doc__, 400, "elementwise")
+args = parse_args(__doc__, 450, "elementwise")
 rng = np.random.default_rng(1105)
 MAX_ULPS = 4
 MAX_ABS = 2.5e-7          # 4 ulp at 1, the largest output either can give
@@ -105,13 +110,34 @@ def unary_case(op):
     return [helper.make_node(op, ["x"], ["y"], name=op.lower())], [], TRUTH[op], op
 
 
+def pow_case(shape):
+    """a Pow model with an initializer as one operand, and the true answer"""
+    tail = shape[len(shape) - int(rng.integers(0, len(shape) + 1)):] if shape else []
+    special = [2.0, 3.0, 0.5, -1.0, 0.0, -2.0, 1.0 / 3.0, 1.5]
+    v = np.array([rng.choice(special) if rng.random() < 0.6 else rng.standard_normal() * 3
+                  for _ in range(int(np.prod(tail)) if tail else 1)], np.float32).reshape(tail)
+    base_is_init = rng.random() < 0.25
+    if base_is_init:
+        v = np.asarray(v * 2, np.float32)                       # bases, negative ones included
+    ins = ["w", "x"] if base_is_init else ["x", "w"]
+    nodes = [helper.make_node("Pow", ins, ["y"], name="pow")]
+    inits = [numpy_helper.from_array(v, "w")]
+
+    def want(x):
+        a, b = (v, x) if base_is_init else (x, v)
+        with np.errstate(all="ignore"):
+            return np.asarray(np.power(a.astype(np.float64), b.astype(np.float64)), np.float32)
+    return nodes, inits, want, f"Pow({'w, x' if base_is_init else 'x, w'}), w {list(tail)}"
+
+
 stats = dict(ok=0, fail=0)
-OPS = ["Clip", "Sigmoid", "Tanh", "Exp", "Log", "Sqrt", "Abs", "Neg"]
+OPS = ["Clip", "Sigmoid", "Tanh", "Exp", "Log", "Sqrt", "Abs", "Neg", "Pow"]
 worst = {op: [0, 0.0 if op in BOUNDED else 0] for op in OPS[1:]}         # nullc in ulps; onnxruntime absolute (BOUNDED) or in ulps
 for k in range(args.count):
     shape = [int(d) for d in rng.integers(1, 6, int(rng.integers(0, 5)))]
     op = OPS[k % len(OPS)]
-    nodes, inits, want, what = clip_case() if op == "Clip" else unary_case(op)
+    nodes, inits, want, what = (clip_case() if op == "Clip" else pow_case(shape) if op == "Pow"
+                                else unary_case(op))
     g = helper.make_graph(nodes, "g", [helper.make_tensor_value_info("x", TensorProto.FLOAT, shape)],
                           [helper.make_tensor_value_info("y", TensorProto.FLOAT, shape)], inits)
     model = helper.make_model(g, opset_imports=[helper.make_opsetid("", 17)])

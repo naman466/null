@@ -68,6 +68,7 @@ const char* runtime_part(OpType op) {
         case OpType::Sub:
         case OpType::Mul:
         case OpType::Div:
+        case OpType::Pow:
         case OpType::Clip:    return "elementwise";
         case OpType::Gemm:
         case OpType::MatMul:  return "matmul";
@@ -317,6 +318,7 @@ private:
             case OpType::Sub: emit_binary(n, "sub"); break;
             case OpType::Mul: emit_binary(n, "mul"); break;
             case OpType::Div: emit_binary(n, "div"); break;
+            case OpType::Pow: emit_binary(n, "pow"); break;
             case OpType::Gemm:    emit_gemm(n); break;
             case OpType::MatMul:  emit_matmul(n); break;
             case OpType::Softmax: emit_softmax(n); break;

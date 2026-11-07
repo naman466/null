@@ -57,6 +57,47 @@ static void test_div_ieee(void) {
     CHECK(isnan(y[2]));
 }
 
+static void test_pow(void) {
+    /* exact where the answer is representable: small integer powers, square roots of squares */
+    float a[6] = {3.0f, -2.0f, 4.0f, 2.0f, 10.0f, 1.5f};
+    float b[6] = {2.0f, 3.0f, 0.5f, -2.0f, 0.0f, 2.0f};
+    float want[6] = {9.0f, -8.0f, 2.0f, 0.25f, 1.0f, 2.25f};
+    float y[6];
+    null_pow_f32(a, b, y, 6);
+    CHECK(all_equal(y, want, 6));
+    /* and close to double elsewhere */
+    a[0] = 2.5f; b[0] = 1.7f;
+    null_pow_f32(a, b, y, 1);
+    CHECK(fabs(y[0] - pow(2.5, (double)1.7f)) <= 2.5e-7 * pow(2.5, (double)1.7f));
+}
+
+static void test_pow_special_values(void) {
+    /* IEEE 754's (and numpy's) special cases */
+    float nan = NAN, inf = INFINITY;
+    float a[8] = {nan, 1.0f, -8.0f, 0.0f, -0.0f, 0.5f, 2.0f, -1.0f};
+    float b[8] = {0.0f, nan, 1.0f / 3.0f, -1.0f, -1.0f, inf, -inf, inf};
+    float y[8];
+    null_pow_f32(a, b, y, 8);
+    CHECK(y[0] == 1.0f);                      /* x^0 = 1, NaN included */
+    CHECK(y[1] == 1.0f);                      /* 1^y = 1, NaN included */
+    CHECK(y[2] != y[2]);                      /* negative base, non-integer exponent */
+    CHECK(y[3] == inf);
+    CHECK(y[4] == -inf);                      /* -0 to an odd negative integer */
+    CHECK(same_bits(y[5], 0.0f));
+    CHECK(same_bits(y[6], 0.0f));
+    CHECK(y[7] == 1.0f);                      /* (-1)^inf = 1 */
+}
+
+static void test_pow_bcast_scalar_exponent(void) {
+    /* x[2, 2] ^ 2, the way exporters write x ** 2: a rank-0 exponent */
+    float x[4] = {1, -2, 3, -4}, two = 2.0f, want[4] = {1, 4, 9, 16}, y[4];
+    int64_t shape[2] = {2, 2}, sx[2], s2[2];
+    null_broadcast_strides(2, shape, 2, shape, sx);
+    null_broadcast_strides(2, shape, 0, shape, s2);
+    null_pow_bcast_f32(x, &two, y, 2, shape, sx, s2);
+    CHECK(all_equal(y, want, 4));
+}
+
 /* ---- binary, broadcasting ---- */
 
 static void test_bcast_bias_row(void) {
@@ -303,6 +344,9 @@ static void run_elementwise_tests(void) {
     test_relu_special_values();
     test_binary_flat();
     test_div_ieee();
+    test_pow();
+    test_pow_special_values();
+    test_pow_bcast_scalar_exponent();
     test_bcast_bias_row();
     test_bcast_outer();
     test_bcast_scalar();

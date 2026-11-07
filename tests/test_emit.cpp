@@ -611,6 +611,42 @@ TEST(emit_exp_log_sqrt_abs_neg) {
     CHECK(contains(c, "runtime/null/elementwise.h, embedded"));
 }
 
+TEST(emit_pow) {
+    // x[2, 3] ^ 2 with a rank-0 exponent, as both PyTorch exporters write x ** 2,
+    // broadcasts; x ^ x, the same shape, takes the flat kernel
+    Graph g("pow");
+    g.inputs = {"x"};
+    g.outputs = {"y", "z"};
+    g.add_value_info(Tensor("x", {2, 3}, DType::FLOAT32));
+    Tensor two("two", {}, DType::FLOAT32);
+    two.set_float_data({2.0f});
+    two.shape = {};
+    g.add_initializer(two);
+    g.add_node(Node("square", OpType::Pow, {"x", "two"}, {"y"}));
+    g.add_node(Node("self", OpType::Pow, {"x", "x"}, {"z"}));
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(g, opt);
+    CHECK(contains(c, "null_pow_bcast_f32(in_x, w_two, t_y, 2,"));
+    CHECK(contains(c, "_b_strides[2] = {0, 0};"));
+    CHECK(contains(c, "null_pow_f32(in_x, in_x, t_z, 6);"));
+
+    // an integer exponent tensor is a type ONNX allows, but not one Null computes with
+    Graph i("pow_int");
+    i.inputs = {"x"};
+    i.outputs = {"y"};
+    i.add_value_info(Tensor("x", {3}, DType::FLOAT32));
+    Tensor three("three", {}, DType::INT64);
+    int64_t v = 3;
+    three.data.assign(reinterpret_cast<const uint8_t*>(&v), reinterpret_cast<const uint8_t*>(&v) + 8);
+    three.shape = {};
+    i.add_initializer(three);
+    i.add_node(Node("cube", OpType::Pow, {"x", "three"}, {"y"}));
+    infer_shapes(i);
+    CHECK(contains(emit_error(i), "node 'cube' (Pow): input 'three' is a int64 constant, only float32 data can be used here"));
+}
+
 TEST(emit_fused_relu) {
     // a Gemm or Conv carrying the optimiser's kFusedRelu passes 1 to its kernel
     Graph g("fused");

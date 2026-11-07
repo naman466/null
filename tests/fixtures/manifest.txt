@@ -147,3 +147,19 @@ init w_u 1 efd8d6c14e669cec 6 8
 init b_u 1 6227930acd73c107 6
 init one 1 4b72477f9c5c2f98
 end
+model pow.onnx ok 14 17 pow
+input x 1 1 8
+output y 1 1 6
+node Gemm x,w_p,b_p h transB
+node Pow h,p hp -
+node Abs h ha -
+node Pow ha,q hq -
+node Pow two,h th -
+node Add hp,hq s -
+node Add s,th y -
+init w_p 1 d6fea0889da044e4 6 8
+init b_p 1 d2a47c276cb79fe2 6
+init p 1 a1f05ef6c9e8d195 6
+init q 1 b3ff4ce2afbf4980 6
+init two 1 4d25b67f9dce80b5
+end

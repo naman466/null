@@ -352,7 +352,7 @@ TEST(opt_fold_float_operations) {
 TEST(opt_fold_refuses) {
     Graph g("r");
     g.inputs = {"x", "over"};
-    g.outputs = {"y1", "y2", "out", "y4", "y5", "y6", "y7", "y8"};
+    g.outputs = {"y1", "y2", "out", "y4", "y5", "y6", "y7", "y8", "y9"};
     g.add_value_info(Tensor("x", {1}, DType::FLOAT32));
     add_floats(g, "col", {2, 1}, {1, 2});
     add_floats(g, "row", {3}, {1, 2, 3});
@@ -375,6 +375,8 @@ TEST(opt_fold_refuses) {
     g.add_node(Node("o7", OpType::Mul, {"x", "e"}, {"y7"}));
     g.add_node(Node("log", OpType::Log, {"row"}, {"l"}));
     g.add_node(Node("o8", OpType::Mul, {"x", "l"}, {"y8"}));
+    g.add_node(Node("pow", OpType::Pow, {"row", "row"}, {"p"}));          // and powf
+    g.add_node(Node("o9", OpType::Mul, {"x", "p"}, {"y9"}));
     infer_shapes(g);
     CHECK_EQ(fold_constants(g), size_t{0});
 }
