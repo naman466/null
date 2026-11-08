@@ -55,6 +55,16 @@ size_t fold_constants(Graph& g);
 // input, stays
 size_t remove_identities(Graph& g);
 
+// a BatchNormalization whose input comes from a Conv, and is read by nothing
+// else, is folded into it: with a = scale / sqrt(var + epsilon) per output
+// channel, the Conv gets new weights W * a and a new bias (B - mean) * a + beta
+// (B is 0 when it had none), each computed in double and rounded once, as new
+// initializers, and writes the BatchNorm's output. the weights, the bias and
+// the four parameters must be initializers the caller cannot replace. unlike
+// the other passes this changes the arithmetic: the folded result is as close
+// to the true value as the unfolded one, but not bit for bit the same
+size_t fold_batchnorm(Graph& g);
+
 // a Relu whose input comes from a Gemm or Conv, and is read by nothing else,
 // is fused into it: the node gets the kFusedRelu attribute and writes the
 // Relu's output, and its kernel applies the Relu as it writes. the fused

@@ -1,6 +1,7 @@
 #include "opt/optimize.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <optional>
 #include <unordered_set>
@@ -45,6 +46,7 @@ const std::vector<Pass>& passes() {
     static const std::vector<Pass> list = {
         {"fold-constants", fold_constants},
         {"remove-identities", remove_identities},
+        {"fold-batchnorm", fold_batchnorm},
         {"fuse-relu", fuse_relu},
         {"dead-code", eliminate_dead_nodes},
     };
@@ -225,6 +227,82 @@ size_t remove_identities(Graph& g) {
             g.value_info.erase(in);
         }
         if (n.outputs.size() > 1 && !n.outputs[1].empty()) g.value_info.erase(n.outputs[1]);
+        ++changes;
+    }
+    return changes;
+}
+
+namespace {
+
+// a float initializer the caller cannot replace (not a graph input)
+const Tensor* fixed_floats(const Graph& g, const std::string& name) {
+    if (name.empty() || !g.is_initializer(name) || g.is_graph_input(name)) return nullptr;
+    const Tensor& t = g.initializers.at(name);
+    return t.dtype == DType::FLOAT32 ? &t : nullptr;
+}
+
+// a tensor name not yet used in the graph, from `base`
+std::string unused_name(const Graph& g, const std::string& base) {
+    std::string name = base;
+    for (int i = 2; g.value_info.count(name) || g.initializers.count(name) || g.is_graph_input(name) ||
+                    is_graph_output(g, name); ++i)
+        name = base + "_" + std::to_string(i);
+    return name;
+}
+
+} // namespace
+
+size_t fold_batchnorm(Graph& g) {
+    size_t changes = 0;
+    for (Node& bn : g.nodes) {
+        if (bn.is_dead || bn.op != OpType::BatchNormalization || bn.inputs.size() != 5 || bn.outputs.empty()) continue;
+        const std::string mid = bn.inputs[0];
+        Node* conv = producer_of(g, mid);
+        if (!conv || conv->op != OpType::Conv || conv->has_attr(kFusedRelu) || conv->inputs.size() < 2) continue;
+        // the convolution's own output must not be needed by anyone else
+        if (is_graph_output(g, mid)) continue;
+        size_t readers = 0;
+        for (const Node& n : g.nodes)
+            if (!n.is_dead && std::find(n.inputs.begin(), n.inputs.end(), mid) != n.inputs.end()) ++readers;
+        if (readers != 1) continue;
+        // the weights, the bias if any, and all four parameters fixed at compile time
+        const Tensor* w = fixed_floats(g, conv->inputs[1]);
+        const bool has_bias = conv->inputs.size() > 2 && !conv->inputs[2].empty();
+        const Tensor* bias = has_bias ? fixed_floats(g, conv->inputs[2]) : nullptr;
+        if (!w || w->shape.empty() || (has_bias && !bias)) continue;
+        const int64_t m = w->shape[0];
+        const Tensor* p[4];
+        bool ok = true;
+        for (size_t i = 0; i < 4; ++i) {
+            p[i] = fixed_floats(g, bn.inputs[i + 1]);
+            ok = ok && p[i] && p[i]->num_elements() == m;
+        }
+        if (!ok || (bias && bias->num_elements() != m)) continue;
+
+        // W'[k] = W[k] * a[k] and B'[k] = (B[k] - mean[k]) * a[k] + beta[k], with
+        // a[k] = scale[k] / sqrt(var[k] + epsilon): each in double, rounded once
+        const double eps = static_cast<double>(bn.attr_float("epsilon", 1e-5f));
+        const std::vector<float> wv = floats_of(*w), sc = floats_of(*p[0]), be = floats_of(*p[1]),
+                                 mu = floats_of(*p[2]), va = floats_of(*p[3]);
+        const std::vector<float> bv = bias ? floats_of(*bias) : std::vector<float>(static_cast<size_t>(m), 0.0f);
+        const size_t per = wv.size() / static_cast<size_t>(m);
+        std::vector<float> w2(wv.size()), b2(static_cast<size_t>(m));
+        for (size_t k = 0; k < static_cast<size_t>(m); ++k) {
+            const double a = sc[k] / std::sqrt(static_cast<double>(va[k]) + eps);
+            for (size_t i = 0; i < per; ++i) w2[k * per + i] = static_cast<float>(wv[k * per + i] * a);
+            b2[k] = static_cast<float>((static_cast<double>(bv[k]) - mu[k]) * a + be[k]);
+        }
+        const std::string out = bn.outputs[0];
+        const std::string wn = unused_name(g, out + ".folded_weight"), bnn = unused_name(g, out + ".folded_bias");
+        g.add_initializer(make_constant(wn, w->shape, DType::FLOAT32, w2.data(), w2.size() * 4));
+        g.add_initializer(make_constant(bnn, {m}, DType::FLOAT32, b2.data(), b2.size() * 4));
+        conv->inputs[1] = wn;
+        if (conv->inputs.size() < 3) conv->inputs.resize(3);
+        conv->inputs[2] = bnn;
+        for (std::string& o : conv->outputs)
+            if (o == mid) o = out;
+        bn.is_dead = true;
+        g.value_info.erase(mid);
         ++changes;
     }
     return changes;

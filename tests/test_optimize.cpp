@@ -133,15 +133,17 @@ TEST(opt_rounds_until_nothing_changes) {
                      Node("d", OpType::Dropout, {"b"}, {"c"}), Node("i2", OpType::Identity, {"c"}, {"y"}),
                      Node("lost", OpType::Relu, {"b"}, {"z"})});
     std::vector<PassResult> r = optimize(g);
-    CHECK_EQ(r.size(), size_t{4});
+    CHECK_EQ(r.size(), size_t{5});
     CHECK_EQ(r[0].pass, std::string("fold-constants"));
     CHECK_EQ(r[0].changes, size_t{0});
     CHECK_EQ(r[1].pass, std::string("remove-identities"));
     CHECK_EQ(r[1].changes, size_t{3});
-    CHECK_EQ(r[2].pass, std::string("fuse-relu"));
+    CHECK_EQ(r[2].pass, std::string("fold-batchnorm"));
     CHECK_EQ(r[2].changes, size_t{0});
-    CHECK_EQ(r[3].pass, std::string("dead-code"));
-    CHECK_EQ(r[3].changes, size_t{1});
+    CHECK_EQ(r[3].pass, std::string("fuse-relu"));
+    CHECK_EQ(r[3].changes, size_t{0});
+    CHECK_EQ(r[4].pass, std::string("dead-code"));
+    CHECK_EQ(r[4].changes, size_t{1});
     CHECK_EQ(g.live_node_count(), size_t{1});
     CHECK_EQ(node(g, "r").outputs, (std::vector<std::string>{"y"}));
     CHECK(g.validate().empty());
@@ -478,8 +480,98 @@ TEST(opt_fuse_relu_into_conv_through_an_identity) {
     infer_shapes(g);
     std::vector<PassResult> r = optimize(g);
     CHECK_EQ(r[1].changes, size_t{1});                  // the Identity
-    CHECK_EQ(r[2].changes, size_t{1});                  // the Relu
+    CHECK_EQ(r[3].changes, size_t{1});                  // the Relu
     CHECK_EQ(g.live_node_count(), size_t{1});
     CHECK_EQ(node(g, "conv").attr_int(kFusedRelu, 0), int64_t{1});
     CHECK_EQ(node(g, "conv").outputs, (std::vector<std::string>{"y"}));
+}
+
+// x[1, 1, 3, 3] -> Conv(w[2, 1, 2, 2], b?) -> c -> BatchNormalization -> y
+static Graph conv_bn(bool with_bias) {
+    Graph g("cbn");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {1, 1, 3, 3}, DType::FLOAT32));
+    add_floats(g, "w", {2, 1, 2, 2}, {1, 2, 3, 4, -1, -2, -3, -4});
+    if (with_bias) add_floats(g, "b", {2}, {0.5f, -0.5f});
+    add_floats(g, "scale", {2}, {2.0f, 0.5f});
+    add_floats(g, "beta", {2}, {1.0f, -1.0f});
+    add_floats(g, "mean", {2}, {0.25f, 3.0f});
+    add_floats(g, "var", {2}, {4.0f, 0.25f});
+    g.add_node(Node("conv", OpType::Conv,
+                    with_bias ? std::vector<std::string>{"x", "w", "b"} : std::vector<std::string>{"x", "w"}, {"c"}));
+    Node bn("bn", OpType::BatchNormalization, {"c", "scale", "beta", "mean", "var"}, {"y"});
+    bn.add_attr("epsilon", 0.0f);
+    g.add_node(bn);
+    infer_shapes(g);
+    return g;
+}
+
+TEST(opt_fold_batchnorm) {
+    // a = scale / sqrt(var) = {1, 1}; then W' = W, B' = (b - mean) * a + beta
+    Graph g = conv_bn(true);
+    CHECK_EQ(fold_batchnorm(g), size_t{1});
+    CHECK(node(g, "bn").is_dead);
+    const Node conv = node(g, "conv");
+    CHECK_EQ(conv.outputs, (std::vector<std::string>{"y"}));
+    CHECK_EQ(floats(g, conv.inputs[1]), (std::vector<float>{1, 2, 3, 4, -1, -2, -3, -4}));
+    CHECK_EQ(floats(g, conv.inputs[2]), (std::vector<float>{0.5f - 0.25f + 1.0f, -0.5f - 3.0f - 1.0f}));
+    CHECK(g.get_tensor_info("c") == nullptr);
+    // the original weights are untouched: another node may read them
+    CHECK_EQ(floats(g, "w"), (std::vector<float>{1, 2, 3, 4, -1, -2, -3, -4}));
+    CHECK(conv.inputs[1] != "w");
+
+    // scales that are not 1, in double and rounded once; a Conv with no bias gets one
+    Graph s = conv_bn(false);
+    s.initializers.at("var").set_float_data({1.0f, 9.0f});
+    s.initializers.at("scale").set_float_data({3.0f, 1.0f});
+    CHECK_EQ(fold_batchnorm(s), size_t{1});
+    const Node c2 = node(s, "conv");
+    CHECK_EQ(c2.inputs.size(), size_t{3});
+    std::vector<float> w2 = floats(s, c2.inputs[1]), b2 = floats(s, c2.inputs[2]);
+    CHECK_EQ(w2[0], 3.0f);
+    CHECK_EQ(w2[3], 12.0f);
+    CHECK_EQ(w2[4], static_cast<float>(-1.0 / 3.0));
+    CHECK_EQ(b2, (std::vector<float>{-0.25f * 3 + 1.0f, static_cast<float>(-3.0 / 3.0 - 1.0)}));
+
+    // in the full optimiser a Relu after the BatchNorm then fuses into the Conv
+    Graph r = conv_bn(true);
+    r.outputs = {"z"};
+    r.add_node(Node("relu", OpType::Relu, {"y"}, {"z"}));
+    infer_shapes(r);
+    std::vector<PassResult> res = optimize(r);
+    CHECK_EQ(res[2].changes, size_t{1});
+    CHECK_EQ(res[3].changes, size_t{1});
+    CHECK_EQ(r.live_node_count(), size_t{1});
+    CHECK_EQ(node(r, "conv").outputs, (std::vector<std::string>{"z"}));
+}
+
+TEST(opt_fold_batchnorm_refuses) {
+    // the Conv's output read by another node too
+    Graph shared = conv_bn(true);
+    shared.outputs = {"y", "z"};
+    shared.add_node(Node("other", OpType::Relu, {"c"}, {"z"}));
+    infer_shapes(shared);
+    CHECK_EQ(fold_batchnorm(shared), size_t{0});
+    // the Conv's output a graph output
+    Graph out = conv_bn(true);
+    out.outputs = {"y", "c"};
+    CHECK_EQ(fold_batchnorm(out), size_t{0});
+    // a parameter, or the weights, the caller may replace
+    Graph param = conv_bn(true);
+    param.inputs.push_back("mean");
+    CHECK_EQ(fold_batchnorm(param), size_t{0});
+    Graph weights = conv_bn(true);
+    weights.inputs.push_back("w");
+    CHECK_EQ(fold_batchnorm(weights), size_t{0});
+    // not after a Conv
+    Graph relu("r");
+    relu.inputs = {"x"};
+    relu.outputs = {"y"};
+    relu.add_value_info(Tensor("x", {1, 2, 3}, DType::FLOAT32));
+    for (const char* n : {"scale", "beta", "mean", "var"}) add_floats(relu, n, {2}, {1, 1});
+    relu.add_node(Node("relu", OpType::Relu, {"x"}, {"r"}));
+    relu.add_node(Node("bn", OpType::BatchNormalization, {"r", "scale", "beta", "mean", "var"}, {"y"}));
+    infer_shapes(relu);
+    CHECK_EQ(fold_batchnorm(relu), size_t{0});
 }

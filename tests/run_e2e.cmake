@@ -2,7 +2,8 @@
 # vectors driver, and check its answers against onnx runtime's recorded ones.
 # the model is compiled twice, optimised with its memory planned (the default)
 # and with --no-opt --no-plan:
-# both must agree with onnx runtime, and with each other bit for bit
+# both must agree with onnx runtime, and with each other bit for bit (unless
+# the optimiser folded a BatchNorm, which changes the arithmetic)
 #
 #   cmake -DNULLC=<nullc> -DMODEL=<model.onnx> -DVECTORS=<file.vectors>
 #         -DDRIVER=<run_vectors.c> -DOUT=<dir> -DCC=<c compiler>
@@ -42,6 +43,11 @@ foreach(variant opt noopt)
     if(NOT code EQUAL 0)
         message(FATAL_ERROR "nullc ${flags} failed (${code}):\n${out}${err}")
     endif()
+    # folding a BatchNorm into a Conv is the one pass that changes the
+    # arithmetic (new weights, rounded once): nullc's report says when it ran
+    if(variant STREQUAL "opt" AND out MATCHES "fold-batchnorm [1-9]")
+        set(changes_arithmetic TRUE)
+    endif()
 
     execute_process(
         COMMAND "${CC}" -std=c99 -O2 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror
@@ -59,6 +65,12 @@ foreach(variant opt noopt)
         message(FATAL_ERROR "generated model (${variant}) disagrees with onnx runtime:\n${out}${err}")
     endif()
 endforeach()
+
+if(changes_arithmetic)
+    message(STATUS "a BatchNorm was folded into its Conv, which changes the arithmetic: "
+                   "both builds were held to onnx runtime's answers instead of to each other")
+    return()
+endif()
 
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -E compare_files "${OUT}/${name}_opt.out" "${OUT}/${name}_noopt.out"
