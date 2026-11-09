@@ -379,6 +379,32 @@ TEST(emit_gather) {
     CHECK(contains(c, "null_gather_f32(in_x, t_y, 4, 3, 1, k0_g_indices, 2);"));
 }
 
+TEST(emit_concat) {
+    // x[2, 3] and a weight w[2, 1] along axis 1, then an empty [2, 0] that takes no slot:
+    // one copy per non-empty input, the offsets adding up
+    Graph g("cat");
+    g.inputs = {"x", "e"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {2, 3}, DType::FLOAT32));
+    g.add_value_info(Tensor("e", {2, 0}, DType::FLOAT32));
+    Tensor w("w", {2, 1}, DType::FLOAT32);
+    w.set_float_data({7, 8});
+    g.add_initializer(w);
+    Node cat("cat", OpType::Concat, {"x", "e", "w", "x"}, {"y"});
+    cat.add_attr("axis", int64_t{-1});
+    g.add_node(cat);
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(g, opt);
+    CHECK(contains(c, " * output y: float32[2, 7]"));
+    CHECK(contains(c, "null_concat_f32(in_x, t_y, 2, 3, 7, 0, 1);"));
+    CHECK(contains(c, "null_concat_f32(w_w, t_y, 2, 1, 7, 3, 1);"));
+    CHECK(contains(c, "null_concat_f32(in_x, t_y, 2, 3, 7, 4, 1);"));
+    CHECK(!contains(c, "null_concat_f32(in_e"));
+    CHECK(contains(emit_c(g), "runtime/null/layout.h, embedded"));
+}
+
 TEST(emit_transpose) {
     // [1, 8, 32] with perm [1, 0, 2]: only a size-1 dim moves, so no data does
     Node swap("t", OpType::Transpose, {"x"}, {"y"});

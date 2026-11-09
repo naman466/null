@@ -1,5 +1,5 @@
 /*
- * null runtime, layout: transpose and gather, which move data without
+ * null runtime, layout: transpose, gather and concat, which move data without
  * arithmetic
  * needs null/core.h first; include runtime/null_runtime.h to get every part
  */
@@ -55,6 +55,28 @@ static inline void null_gather_f32(const float* x, float* y, int64_t outer, int6
             const float* src = x + (o * n + indices[j]) * inner;
             for (i = 0; i < inner; ++i) *y++ = src[i];
         }
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * concat
+ *
+ * one input's share of a concatenation: y viewed as [outer, n_out, inner]
+ * along the concat axis and x as [outer, n_in, inner]; x's block of each outer
+ * slice goes to positions offset .. offset + n_in - 1 of y's. the compiler
+ * calls this once per input, with the offsets adding up, so together the
+ * calls write every element of y exactly once.
+ *
+ * y must not alias x.
+ * ------------------------------------------------------------------------ */
+static inline void null_concat_f32(const float* x, float* y, int64_t outer, int64_t n_in, int64_t n_out,
+                                   int64_t offset, int64_t inner) {
+    int64_t o, i;
+    const int64_t block = n_in * inner;
+    for (o = 0; o < outer; ++o) {
+        const float* src = x + o * block;
+        float* dst = y + (o * n_out + offset) * inner;
+        for (i = 0; i < block; ++i) dst[i] = src[i];
     }
 }
 

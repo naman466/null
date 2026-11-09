@@ -138,6 +138,23 @@ def resnet18_small():
     return realistic_weights(ResNet18Small())
 
 
+class DenseBlock(nn.Module):
+    """DenseNet's idea in miniature: each layer sees every earlier feature map, joined along the
+    channels by torch.cat (3, then 3 + 4, then 3 + 4 + 4 channels), then pooled and classified"""
+    def __init__(self):
+        super().__init__()
+        self.c1 = nn.Conv2d(3, 4, 3, padding=1)
+        self.c2 = nn.Conv2d(7, 4, 3, padding=1)
+        self.fc = nn.Linear(11, 10)
+
+    def forward(self, x):
+        h1 = torch.relu(self.c1(x))
+        x1 = torch.cat([x, h1], dim=1)
+        h2 = torch.relu(self.c2(x1))
+        x2 = torch.cat([x1, h2], dim=1)
+        return self.fc(torch.flatten(torch.nn.functional.adaptive_avg_pool2d(x2, 1), 1))
+
+
 def no_rule(op):
     return f"({op}): no shape inference rule for this operator yet"
 
@@ -164,6 +181,9 @@ FIXTURES = [
                                            (1, 3, 64, 64), "legacy", False, ("compiles", "")),
     ("resnet18_small__dynamo.onnx", resnet18_small,
                                            (1, 3, 64, 64), "dynamo", False, ("compiles", "")),
+    # torch.cat along the channels, twice
+    ("dense_block__legacy.onnx",  DenseBlock, (1, 3, 16, 16), "legacy", False, ("compiles", "")),
+    ("dense_block__dynamo.onnx",  DenseBlock, (1, 3, 16, 16), "dynamo", False, ("compiles", "")),
 ]
 
 

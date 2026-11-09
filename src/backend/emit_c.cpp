@@ -353,6 +353,10 @@ private:
                     emit_gather(n);
                     break;
                 }
+                if (n.op == OpType::Concat && info(n.outputs.at(0)).dtype == DType::FLOAT32) {
+                    emit_concat(n);
+                    break;
+                }
                 fail(where(n) + ": no code generation for this operator yet (only for shape values "
                      "known at compile time)");
             default:
@@ -646,6 +650,34 @@ private:
         std::string idx = int_array(n.name + "_indices", *indices);
         body_ << "    null_gather_f32(" << x << ", " << y << ", " << outer << ", " << count << ", " << inner << ", "
               << idx << ", " << indices->size() << ");\n";
+    }
+
+    // one copy per input into its slot along the axis; an input with nothing
+    // along the axis takes no slot and is not read
+    void emit_concat(const Node& n) {
+        const auto& so = info(n.outputs.at(0)).shape;
+        int64_t axis = n.attr_int("axis");
+        if (axis < 0) axis += static_cast<int64_t>(so.size());
+        int64_t outer = 1, inner = 1;
+        for (size_t i = 0; i < so.size(); ++i) {
+            if (static_cast<int64_t>(i) < axis) outer *= so[i];
+            if (static_cast<int64_t>(i) > axis) inner *= so[i];
+        }
+        const int64_t n_out = so[static_cast<size_t>(axis)];
+        std::vector<std::string> xs;
+        for (size_t k = 0; k < n.inputs.size(); ++k)
+            xs.push_back(info(n.inputs[k]).num_elements() ? read(n, k) : "");
+        std::string y = write(n, 0);
+        if (outer * n_out * inner == 0) return;
+        parts_.insert("layout");
+        int64_t offset = 0;
+        for (size_t k = 0; k < n.inputs.size(); ++k) {
+            const int64_t n_in = info(n.inputs[k]).shape[static_cast<size_t>(axis)];
+            if (!xs[k].empty())
+                body_ << "    null_concat_f32(" << xs[k] << ", " << y << ", " << outer << ", " << n_in << ", " << n_out
+                      << ", " << offset << ", " << inner << ");\n";
+            offset += n_in;
+        }
     }
 
     void emit_softmax(const Node& n) {

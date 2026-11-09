@@ -535,3 +535,31 @@ shape mean 1 64 1 1
 shape view 1 64
 shape y 1 10
 end
+model dense_block__legacy.onnx legacy torch 2.14.1 opset 20
+input x 1 3 16 16
+ops Concat:2 Conv:2 Flatten:1 Gemm:1 GlobalAveragePool:1 Relu:2
+expect compiles
+shape /c1/Conv_output_0 1 4 16 16
+shape /Relu_output_0 1 4 16 16
+shape /Concat_output_0 1 7 16 16
+shape /c2/Conv_output_0 1 4 16 16
+shape /Relu_1_output_0 1 4 16 16
+shape /Concat_1_output_0 1 11 16 16
+shape /GlobalAveragePool_output_0 1 11 1 1
+shape /Flatten_output_0 1 11
+shape y 1 10
+end
+model dense_block__dynamo.onnx dynamo torch 2.14.1 opset 20
+input x 1 3 16 16
+ops Concat:2 Conv:2 Gemm:1 ReduceMean:1 Relu:2 Reshape:1
+expect compiles
+shape conv2d 1 4 16 16
+shape relu 1 4 16 16
+shape cat 1 7 16 16
+shape conv2d_1 1 4 16 16
+shape relu_1 1 4 16 16
+shape cat_1 1 11 16 16
+shape mean 1 11 1 1
+shape view 1 11
+shape y 1 10
+end

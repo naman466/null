@@ -1,4 +1,4 @@
-/* tests for runtime/null/layout.h: transpose and gather; included by test_kernels.c */
+/* tests for runtime/null/layout.h: transpose, gather and concat; included by test_kernels.c */
 
 static void test_transpose_matrix(void) {
     /* [2, 3] -> [3, 2]: output dim 0 is input dim 1 (stride 1), output dim 1 is input dim 0 (stride 3) */
@@ -46,7 +46,31 @@ static void test_gather(void) {
     }
 }
 
+static void test_concat(void) {
+    /* [2, 2, 2] and [2, 1, 2] along axis 1 into [2, 3, 2]: outer 2, inner 2 */
+    float a[8] = {1, 2, 3, 4, 5, 6, 7, 8}, b[4] = {-1, -2, -3, -4}, y[12];
+    float want[12] = {1, 2, 3, 4, -1, -2, 5, 6, 7, 8, -3, -4};
+    float want_first[12] = {-1, -2, 1, 2, 3, 4, -3, -4, 5, 6, 7, 8};
+    null_concat_f32(a, y, 2, 2, 3, 0, 2);
+    null_concat_f32(b, y, 2, 1, 3, 2, 2);
+    CHECK(all_equal(y, want, 12));
+    /* the other order: the offsets, not the calls, decide where each goes */
+    null_concat_f32(a, y, 2, 2, 3, 1, 2);
+    null_concat_f32(b, y, 2, 1, 3, 0, 2);
+    CHECK(all_equal(y, want_first, 12));
+    /* axis 0 (outer 1) is two plain copies, end to end */
+    null_concat_f32(a, y, 1, 8, 12, 0, 1);
+    null_concat_f32(b, y, 1, 4, 12, 8, 1);
+    CHECK(all_equal(y, a, 8) && all_equal(y + 8, b, 4));
+    /* NaN and -0.0 are copied as they are */
+    a[0] = NAN;
+    a[1] = -0.0f;
+    null_concat_f32(a, y, 1, 2, 2, 0, 1);
+    CHECK(y[0] != y[0] && same_bits(y[1], -0.0f));
+}
+
 static void run_layout_tests(void) {
+    test_concat();
     test_transpose_matrix();
     test_transpose_three_dims();
     test_gather();
