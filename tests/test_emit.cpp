@@ -558,6 +558,30 @@ TEST(emit_skips_what_no_output_needs) {
     CHECK(contains(c, "null_relu_f32(in_x, t_y, 4);"));
 }
 
+TEST(emit_unread_input) {
+    // z is an input of the model, but only a node no output depends on reads it, and w
+    // is not read at all: unused parameters, which -Werror rejects, so each is cast to void
+    Graph g("unread");
+    g.inputs = {"x", "z", "w"};
+    g.outputs = {"y", "x"};
+    for (const char* name : {"x", "z", "w"}) g.add_value_info(Tensor(name, {4}, DType::FLOAT32));
+    g.add_node(Node("dead", OpType::Relu, {"z"}, {"junk"}));
+    g.add_node(Node("relu", OpType::Relu, {"x"}, {"y"}));
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(g, opt);
+    CHECK(contains(c, "    int64_t i;\n    (void)in_z;   /* not read */\n    (void)in_w;   /* not read */\n"));
+    CHECK(!contains(c, "(void)in_x"));          // read by relu, and copied to an output
+    // an input that is only an output is read by the copy
+    Graph through("through");
+    through.inputs = {"x"};
+    through.outputs = {"x"};
+    through.add_value_info(Tensor("x", {4}, DType::FLOAT32));
+    infer_shapes(through);
+    CHECK(!contains(emit_c(through, opt), "(void)in_x"));
+}
+
 // x[4] -> Clip(x, min, max) -> y; a bound is an initializer when given a
 // value, "" when omitted
 static Graph clip_graph(const std::string& min, const std::string& max) {

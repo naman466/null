@@ -120,6 +120,7 @@ private:
     std::map<std::string, std::string> expr_;   // tensor name -> C expression
     std::set<std::string> idents_;              // every C identifier used
     std::set<std::string> parts_ = {"core"};    // runtime parts the code calls
+    std::set<std::string> read_;                // tensors some kernel or output copy reads
     std::ostringstream decls_, body_;
     std::vector<std::string> params_;
     uint64_t buffer_bytes_ = 0, weight_bytes_ = 0;
@@ -192,6 +193,7 @@ private:
         if (i >= n.inputs.size() || n.inputs[i].empty())
             fail(where(n) + ": missing input " + std::to_string(i));
         const std::string& name = n.inputs[i];
+        read_.insert(name);
         if (auto it = expr_.find(name); it != expr_.end()) {
             // reading a buffer, directly or through an alias, keeps it alive until now
             if (auto r = root_.find(name); r != root_.end())
@@ -702,6 +704,7 @@ private:
                 fail("output '" + name + "' is " + dtype_name(t.dtype) + ", only float32 outputs are supported");
             if (!expr_.count(name)) fail("output '" + name + "' is never computed");
             if (auto r = root_.find(name); r != root_.end()) buffers_[r->second].last = kToTheEnd;
+            read_.insert(name);
             std::string id = ident("out_", name);
             params_.push_back("float* " + id);
             tail << "    for (i = 0; i < " << t.num_elements() << "; ++i) " << id << "[i] = "
@@ -739,7 +742,12 @@ private:
         }
         out << "\nvoid " << opt_.function_name << "(";
         for (size_t i = 0; i < params_.size(); ++i) out << (i ? ", " : "") << params_[i];
-        out << ") {\n    int64_t i;\n" << body_.str() << "    /* outputs */\n" << tail.str() << "}\n";
+        out << ") {\n    int64_t i;\n";
+        // an input nothing reads (unused by the model, or read only by a node no
+        // output depends on) would be an unused parameter, which -Werror rejects
+        for (auto& name : g_.inputs)
+            if (!read_.count(name)) out << "    (void)" << expr_[name] << ";   /* not read */\n";
+        out << body_.str() << "    /* outputs */\n" << tail.str() << "}\n";
 
         // the same entry point in array form, with the sizes, so a generic
         // driver or a language binding can call any model without knowing
