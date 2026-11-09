@@ -45,7 +45,7 @@ struct ConvGeometry {
 ConvGeometry conv_geometry(const Node& node, const std::vector<int64_t>& x,
                            const std::vector<int64_t>& weight);
 
-// the same for a 2-D MaxPool: a window of kh x kw slides over each channel
+// the same for a 2-D MaxPool or AveragePool: a window of kh x kw slides over each channel
 // separately, so the output is [N, C, out_h, out_w]
 struct PoolGeometry {
     int64_t n, c, h, w;              // input  [N, C, H, W]

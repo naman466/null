@@ -878,6 +878,20 @@ std::vector<TypeInfo> max_pool(const Context& c) {
     return {{c.in(0).dtype, {x[0], x[1], g.out_h, g.out_w}}};
 }
 
+// AveragePool(x) -> y, 2-D only, the same geometry as MaxPool. dilations
+// arrived in opset 19; the opset is not known here, so they are accepted at
+// any version
+std::vector<TypeInfo> average_pool(const Context& c) {
+    c.require_inputs(1, 1);
+    c.require_float(0);
+    const auto& x = c.in(0).shape;
+    if (x.size() != 4) c.fail("only 2-D pooling is supported, input must be [N, C, H, W], got " + shape_of(x));
+    for (size_t i = 1; i < 4; ++i)
+        if (x[i] < 0) c.fail("input " + shape_of(x) + " must have static C, H and W");
+    PoolGeometry g = pool_geometry(c.node, x);
+    return {{c.in(0).dtype, {x[0], x[1], g.out_h, g.out_w}}};
+}
+
 // RULES - REDUCTION
 
 // the dims a reduction takes away, see reduced_axes in the header
@@ -1054,6 +1068,7 @@ const std::unordered_map<OpType, Rule>& rules() {
         {OpType::Transpose,          transpose},
         {OpType::Conv,     conv},
         {OpType::MaxPool,  max_pool},
+        {OpType::AveragePool, average_pool},
         {OpType::GlobalAveragePool, global_average_pool},
         {OpType::ReduceMean,        reduction},
         {OpType::ReduceSum,         reduction},

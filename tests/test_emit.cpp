@@ -262,6 +262,14 @@ TEST(emit_maxpool) {
     // n c h w, kh kw, strides, dilations, pad top left, out h w
     CHECK(contains(c, "_pool = {1, 3, 6, 6, 3, 3, 2, 2, 1, 1, 1, 1, 4, 4};"));
     CHECK(contains(c, "null_maxpool2d_f32(in_x, t_y, &"));
+
+    // the same as an average pool also passes the padding after the image and count_include_pad
+    g.nodes[0].op = OpType::AveragePool;
+    g.nodes[0].add_attr("count_include_pad", int64_t{1});
+    std::string avg = emit_c(g, opt);
+    // ..., pad top left bottom right, out h w, count_include_pad
+    CHECK(contains(avg, "static const null_avgpool2d_params k0_pool_pool = {1, 3, 6, 6, 3, 3, 2, 2, 1, 1, 1, 1, 1, 1, 4, 4, 1};"));
+    CHECK(contains(avg, "null_avgpool2d_f32(in_x, t_y, &k0_pool_pool);"));
 }
 
 // x -> op -> y, with constant axes for a ReduceMean, ReduceSum or ReduceMax

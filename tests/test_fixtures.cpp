@@ -245,7 +245,7 @@ TEST(fixture_hostile_names)          { check_fixture("hostile_names.onnx"); }
 TEST(fixture_optimizable)            { check_fixture("optimizable.onnx"); }
 TEST(fixture_foldable)               { check_fixture("foldable.onnx"); }
 TEST(fixture_no_kernel)              { check_fixture("no_kernel.onnx"); }
-TEST(fixture_no_shape_rule)          { check_fixture("no_shape_rule.onnx"); }
+TEST(fixture_shape_error)            { check_fixture("shape_error.onnx"); }
 
 TEST(fixture_cnn_details) {
     // spot checks on values the manifest doesn't capture
@@ -318,13 +318,13 @@ TEST(fixture_shapes_cnn) {
     CHECK_EQ(shape("y"), (std::vector<int64_t>{1, 2}));
 }
 
-TEST(fixture_shapes_no_rule) {
-    // an operator Null knows but has no shape rule for yet stops inference there
-    Model m = load_model(fixture_path("no_shape_rule.onnx"));
+TEST(fixture_shapes_error) {
+    // a model that loads but whose shapes do not fit stops inference at that node
+    Model m = load_model(fixture_path("shape_error.onnx"));
     try {
         infer_shapes(m.graph);
         throw std::runtime_error("expected ShapeError");
     } catch (const ShapeError& e) {
-        CHECK(std::string(e.what()).find("node 'pool' (AveragePool): no shape inference rule") != std::string::npos);
+        CHECK(std::string(e.what()).find("node 'mm' (MatMul): inner dimensions differ") != std::string::npos);
     }
 }

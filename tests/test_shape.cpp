@@ -277,9 +277,11 @@ TEST(shape_missing_input_metadata) {
 }
 
 TEST(shape_unsupported_op_reported) {
-    Graph g = one_node(OpType::AveragePool, {{1, 3, 8, 8}});
-    CHECK(contains(shape_error(g), "node 'n' (AveragePool): no shape inference rule"));
-    CHECK(!has_shape_rule(OpType::AveragePool));
+    // every operator the frontend accepts has a rule; Unknown stands for one that does not
+    Graph g = one_node(OpType::Unknown, {{1, 3, 8, 8}});
+    CHECK(contains(shape_error(g), "node 'n' (Unknown): no shape inference rule"));
+    CHECK(!has_shape_rule(OpType::Unknown));
+    CHECK(has_shape_rule(OpType::AveragePool));
     CHECK(has_shape_rule(OpType::MaxPool));
     CHECK(has_shape_rule(OpType::Conv));
     CHECK(has_shape_rule(OpType::Add));
@@ -292,7 +294,7 @@ TEST(shape_too_many_outputs) {
 
 TEST(shape_dead_nodes_skipped) {
     Graph g = one_node(OpType::Relu, {{2}});
-    g.add_node(Node("dead", OpType::AveragePool, {"in0"}, {"junk"}));   // no rule, but dead
+    g.add_node(Node("dead", OpType::Unknown, {"in0"}, {"junk"}));   // no rule, but dead
     g.nodes.back().is_dead = true;
     infer_shapes(g);
     CHECK(g.get_tensor_info("junk") == nullptr);
@@ -773,6 +775,31 @@ TEST(shape_maxpool_errors) {
     Graph ints = one_node(OpType::MaxPool, {{1, 3, 8, 8}}, DType::INT64);
     ints.nodes[0].add_attr("kernel_shape", std::vector<int64_t>{2, 2});
     CHECK(contains(shape_error(ints), "must be float32 or float64"));
+}
+
+TEST(shape_average_pool) {
+    // the same geometry as MaxPool: resnet's 3x3 stride 2 pad 1, and ceil_mode
+    Graph g = pool_graph({1, 8, 16, 16}, {3, 3});
+    g.nodes[0].op = OpType::AveragePool;
+    g.nodes[0].add_attr("strides", std::vector<int64_t>{2, 2});
+    g.nodes[0].add_attr("pads", std::vector<int64_t>{1, 1, 1, 1});
+    g.nodes[0].add_attr("count_include_pad", int64_t{1});
+    CHECK_EQ(conv_out(g), (Shape{1, 8, 8, 8}));
+    Graph ceil = pool_graph({1, 1, 5, 5}, {2, 2});
+    ceil.nodes[0].op = OpType::AveragePool;
+    ceil.nodes[0].add_attr("strides", std::vector<int64_t>{2, 2});
+    ceil.nodes[0].add_attr("ceil_mode", int64_t{1});
+    CHECK_EQ(conv_out(ceil), (Shape{1, 1, 3, 3}));
+    // and the same refusals
+    Graph no_kernel = one_node(OpType::AveragePool, {{1, 3, 8, 8}});
+    CHECK(contains(shape_error(no_kernel), "kernel_shape is required"));
+    Graph pads = pool_graph({1, 3, 8, 8}, {2, 2});
+    pads.nodes[0].op = OpType::AveragePool;
+    pads.nodes[0].add_attr("pads", std::vector<int64_t>{0, 0, 0, 2});
+    CHECK(contains(shape_error(pads), "pads must be smaller than the kernel"));
+    Graph two = one_node(OpType::AveragePool, {{1, 3, 8, 8}}, DType::FLOAT32, 2);
+    two.nodes[0].add_attr("kernel_shape", std::vector<int64_t>{2, 2});
+    CHECK(contains(shape_error(two), "has 2 outputs, expected at most 1"));
 }
 
 // TESTS - SHAPES AS VALUES

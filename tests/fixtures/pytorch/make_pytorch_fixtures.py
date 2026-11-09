@@ -196,6 +196,25 @@ class AttentionBlock(nn.Module):
         return self.fc(h.sum(dim=(2, 3)) / 64.0)
 
 
+class AvgPoolBlock(nn.Module):
+    """average pooling three ways: a plain 2x2 stride 2 downsample, Inception's 3x3 stride 1 pad 1 pool
+    that leaves the padding out of the divisor, and a 3x3 stride 2 pad 1 pool with ceil_mode that counts
+    the padding, as PyTorch's default does"""
+    def __init__(self):
+        super().__init__()
+        self.stem = nn.Conv2d(3, 6, 3, padding=1)
+        self.down = nn.AvgPool2d(2)
+        self.branch = nn.AvgPool2d(3, stride=1, padding=1, count_include_pad=False)
+        self.mix = nn.Conv2d(12, 8, 1)
+        self.shrink = nn.AvgPool2d(3, stride=2, padding=1, ceil_mode=True)
+        self.fc = nn.Linear(8 * 5 * 5, 10)           # ceil_mode: 8x8 pools to 5x5, not 4x4
+
+    def forward(self, x):
+        h = self.down(torch.relu(self.stem(x)))
+        h = torch.relu(self.mix(torch.cat([h, self.branch(h)], dim=1)))
+        return self.fc(torch.flatten(self.shrink(h), 1))
+
+
 def no_rule(op):
     return f"({op}): no shape inference rule for this operator yet"
 
@@ -231,6 +250,9 @@ FIXTURES = [
     # mean, max and sum over the pixels and over the channels
     ("attention_block__legacy.onnx", AttentionBlock, (1, 3, 8, 8), "legacy", False, ("compiles", "")),
     ("attention_block__dynamo.onnx", AttentionBlock, (1, 3, 8, 8), "dynamo", False, ("compiles", "")),
+    # average pooling with and without the padding in the divisor, and ceil_mode
+    ("avgpool_block__legacy.onnx", AvgPoolBlock, (1, 3, 16, 16), "legacy", False, ("compiles", "")),
+    ("avgpool_block__dynamo.onnx", AvgPoolBlock, (1, 3, 16, 16), "dynamo", False, ("compiles", "")),
 ]
 
 

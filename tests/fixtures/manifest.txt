@@ -163,8 +163,9 @@ init p 1 a1f05ef6c9e8d195 6
 init q 1 b3ff4ce2afbf4980 6
 init two 1 4d25b67f9dce80b5
 end
-model no_shape_rule.onnx ok 14 17 no_shape_rule
-input x 1 1 1 4 4
-output y 1 1 1 3 3
-node AveragePool x y kernel_shape
+model shape_error.onnx ok 14 17 shape_error
+input x 1 1 4
+output y 1 1 2
+node MatMul x,w y -
+init w 1 616b7bfc18e4b415 3 2
 end

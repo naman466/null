@@ -694,3 +694,33 @@ shape sum_1 1 8
 shape div 1 8
 shape y 1 10
 end
+model avgpool_block__legacy.onnx legacy torch 2.14.1 opset 20
+input x 1 3 16 16
+ops AveragePool:3 Concat:1 Conv:2 Flatten:1 Gemm:1 Relu:2
+expect compiles
+shape /stem/Conv_output_0 1 6 16 16
+shape /Relu_output_0 1 6 16 16
+shape /down/AveragePool_output_0 1 6 8 8
+shape /branch/AveragePool_output_0 1 6 8 8
+shape /Concat_output_0 1 12 8 8
+shape /mix/Conv_output_0 1 8 8 8
+shape /Relu_1_output_0 1 8 8 8
+shape /shrink/AveragePool_output_0 1 8 5 5
+shape /Flatten_output_0 1 200
+shape y 1 10
+end
+model avgpool_block__dynamo.onnx dynamo torch 2.14.1 opset 20
+input x 1 3 16 16
+ops AveragePool:3 Concat:1 Conv:2 Gemm:1 Relu:2 Reshape:1
+expect compiles
+shape conv2d 1 6 16 16
+shape relu 1 6 16 16
+shape avg_pool2d 1 6 8 8
+shape avg_pool2d_1 1 6 8 8
+shape cat 1 12 8 8
+shape conv2d_1 1 8 8 8
+shape relu_1 1 8 8 8
+shape avg_pool2d_2 1 8 5 5
+shape view 1 200
+shape y 1 10
+end
