@@ -264,14 +264,14 @@ TEST(emit_maxpool) {
     CHECK(contains(c, "null_maxpool2d_f32(in_x, t_y, &"));
 }
 
-// x -> op -> y, with optional constant axes for ReduceMean
+// x -> op -> y, with constant axes for a ReduceMean, ReduceSum or ReduceMax
 static std::string emit_reduce(OpType op, const std::vector<int64_t>& x, const std::vector<int64_t>& axes, int64_t keepdims = 1) {
     Graph g("reduce");
     g.inputs = {"x"};
     g.outputs = {"y"};
     g.add_value_info(Tensor("x", x, DType::FLOAT32));
     Node n("mean", op, {"x"}, {"y"});
-    if (op == OpType::ReduceMean) {
+    if (op != OpType::GlobalAveragePool) {
         Tensor t("axes", {static_cast<int64_t>(axes.size())}, DType::INT64);
         t.set_int64_data(axes);
         t.shape = {static_cast<int64_t>(axes.size())};
@@ -303,6 +303,19 @@ TEST(emit_reduce_mean) {
     // everything reduced is one dim; nothing reduced is a copy
     CHECK(contains(emit_reduce(OpType::ReduceMean, {2, 3, 4}, {0, 1, 2}), "= {1, {24}, {1}};"));
     CHECK(contains(emit_reduce(OpType::ReduceMean, {1, 1}, {0}), "= {0, {0}, {0}};"));
+}
+
+TEST(emit_reduce_sum_and_max) {
+    // the same parameters as the mean, another kernel
+    std::string sum = emit_reduce(OpType::ReduceSum, {2, 3, 4}, {1});
+    CHECK(contains(sum, "= {3, {2, 3, 4}, {0, 1, 0}};"));
+    CHECK(contains(sum, "null_reduce_sum_f32(in_x, t_y, &k0_mean_reduce);"));
+    CHECK(contains(sum, "float32[2, 1, 4]"));
+    std::string max = emit_reduce(OpType::ReduceMax, {1, 8, 5, 5}, {2, 3}, 0);
+    CHECK(contains(max, "= {2, {8, 25}, {0, 1}};"));
+    CHECK(contains(max, "null_reduce_max_f32(in_x, t_y, &k0_mean_reduce);"));
+    CHECK(contains(max, "float32[1, 8]"));
+    CHECK(!contains(max, "null_reduce_mean_f32"));
 }
 
 TEST(emit_shape_chain_is_compile_time_only) {

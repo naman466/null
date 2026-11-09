@@ -169,7 +169,7 @@ TEST(pytorch_manifest_matches_files) {
     std::vector<std::string> listed;
     for (auto& [file, _] : manifest()) listed.push_back(file);
     CHECK_EQ(files, listed);
-    CHECK(files.size() >= 17u);
+    CHECK(files.size() >= 19u);
 }
 
 TEST(pytorch_mlp_legacy_dynamic)       { check_model("mlp__legacy_dyn.onnx"); }
@@ -186,6 +186,8 @@ TEST(pytorch_dense_block_legacy)       { check_model("dense_block__legacy.onnx")
 TEST(pytorch_dense_block_dynamo)       { check_model("dense_block__dynamo.onnx"); }
 TEST(pytorch_split_block_legacy)       { check_model("split_block__legacy.onnx"); }
 TEST(pytorch_split_block_dynamo)       { check_model("split_block__dynamo.onnx"); }
+TEST(pytorch_attention_block_legacy)   { check_model("attention_block__legacy.onnx"); }
+TEST(pytorch_attention_block_dynamo)   { check_model("attention_block__dynamo.onnx"); }
 
 TEST(pytorch_weights_held_once) {
     // a real model's weights live in initializers only: value_info has the

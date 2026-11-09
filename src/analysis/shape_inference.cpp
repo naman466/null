@@ -880,10 +880,11 @@ std::vector<TypeInfo> max_pool(const Context& c) {
 
 // RULES - REDUCTION
 
-// the dims a reduction averages away, see reduced_axes in the header
-//   ReduceMean takes axes as an attribute up to opset 17 and as an optional
-//   constant input from opset 18. no axes (or empty ones) means every dim,
-//   unless noop_with_empty_axes=1, which means none
+// the dims a reduction takes away, see reduced_axes in the header
+//   ReduceMean and ReduceMax take axes as an attribute up to opset 17 and as
+//   an optional constant input from opset 18; ReduceSum as an input from
+//   opset 13, the oldest the frontend reads. no axes (or empty ones) means
+//   every dim, unless noop_with_empty_axes=1, which means none
 std::vector<bool> axes_to_reduce(const Context& c) {
     const int64_t rank = static_cast<int64_t>(c.in(0).shape.size());
     std::vector<bool> reduce(static_cast<size_t>(rank), false);
@@ -893,6 +894,8 @@ std::vector<bool> axes_to_reduce(const Context& c) {
     }
     std::vector<int64_t> axes;
     if (c.node.has_attr("axes")) {
+        if (c.node.op == OpType::ReduceSum)
+            c.fail("axes must be an input from opset 13 on, not an attribute");
         if (c.has(1))
             c.fail("axes given both as an attribute (opset 17 and earlier) and as an input (opset 18 and later)");
         axes = c.node.attr_ints("axes");
@@ -912,9 +915,9 @@ std::vector<bool> axes_to_reduce(const Context& c) {
     return reduce;
 }
 
-// ReduceMean(data, axes?) -> reduced, keepdims (default 1) leaves each
-// reduced dim in place as a 1, otherwise it is removed
-std::vector<TypeInfo> reduce_mean(const Context& c) {
+// ReduceMean, ReduceSum, ReduceMax(data, axes?) -> reduced, keepdims
+// (default 1) leaves each reduced dim in place as a 1, otherwise it is removed
+std::vector<TypeInfo> reduction(const Context& c) {
     c.require_inputs(1, 2);
     c.require_numeric(0);
     const std::vector<int64_t>& x = c.in(0).shape;
@@ -1052,7 +1055,9 @@ const std::unordered_map<OpType, Rule>& rules() {
         {OpType::Conv,     conv},
         {OpType::MaxPool,  max_pool},
         {OpType::GlobalAveragePool, global_average_pool},
-        {OpType::ReduceMean,        reduce_mean},
+        {OpType::ReduceMean,        reduction},
+        {OpType::ReduceSum,         reduction},
+        {OpType::ReduceMax,         reduction},
     };
     return table;
 }

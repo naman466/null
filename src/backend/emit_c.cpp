@@ -76,7 +76,9 @@ const char* runtime_part(OpType op) {
         case OpType::Conv:    return "conv";
         case OpType::MaxPool: return "pool";
         case OpType::GlobalAveragePool:
-        case OpType::ReduceMean: return "reduce";
+        case OpType::ReduceMean:
+        case OpType::ReduceSum:
+        case OpType::ReduceMax: return "reduce";
         case OpType::LayerNormalization:
         case OpType::BatchNormalization: return "norm";
         default:              return nullptr;    // Transpose and Gather add "layout" only when they call it
@@ -335,7 +337,9 @@ private:
             case OpType::Conv:    emit_conv(n); break;
             case OpType::MaxPool: emit_maxpool(n); break;
             case OpType::GlobalAveragePool:
-            case OpType::ReduceMean: emit_reduce_mean(n); break;
+            case OpType::ReduceMean:
+            case OpType::ReduceSum:
+            case OpType::ReduceMax: emit_reduce(n); break;
             case OpType::LayerNormalization: emit_layernorm(n); break;
             case OpType::BatchNormalization: emit_batchnorm(n); break;
             case OpType::Transpose: emit_transpose(n); break;
@@ -491,7 +495,7 @@ private:
 
     // size-1 dims are dropped and neighbours that are both kept or both
     // reduced merged, so a GlobalAveragePool is [N*C kept, H*W reduced]
-    void emit_reduce_mean(const Node& n) {
+    void emit_reduce(const Node& n) {
         std::string x = read(n, 0), y = write(n, 0);
         const auto& s = info(n.inputs[0]).shape;
         std::vector<bool> reduce = reduced_axes(n, g_);
@@ -511,7 +515,8 @@ private:
         decls_ << "static const null_reduce_params " << params << " = {" << dims.size() << ", {"
                << (dims.empty() ? "0" : int_list(dims)) << "}, {" << (flags.empty() ? "0" : int_list(flags))
                << "}};\n";
-        body_ << "    null_reduce_mean_f32(" << x << ", " << y << ", &" << params << ");\n";
+        const char* kind = n.op == OpType::ReduceSum ? "sum" : n.op == OpType::ReduceMax ? "max" : "mean";
+        body_ << "    null_reduce_" << kind << "_f32(" << x << ", " << y << ", &" << params << ");\n";
     }
 
     // a float scalar known at compile time: an initializer, or a Constant node

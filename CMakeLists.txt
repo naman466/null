@@ -180,7 +180,8 @@ foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable f
               pytorch/mobilenet_v2_small__legacy pytorch/mobilenet_v2_small__dynamo
               pytorch/resnet18_small__legacy pytorch/resnet18_small__dynamo
               pytorch/dense_block__legacy pytorch/dense_block__dynamo
-              pytorch/split_block__legacy pytorch/split_block__dynamo)
+              pytorch/split_block__legacy pytorch/split_block__dynamo
+              pytorch/attention_block__legacy pytorch/attention_block__dynamo)
     string(REPLACE "/" "_" test_name "${model}")
     add_test(NAME codegen_${test_name}
         COMMAND ${CMAKE_COMMAND}
@@ -206,7 +207,8 @@ foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable f
               pytorch/mobilenet_v2_small__legacy pytorch/mobilenet_v2_small__dynamo
               pytorch/resnet18_small__legacy pytorch/resnet18_small__dynamo
               pytorch/dense_block__legacy pytorch/dense_block__dynamo
-              pytorch/split_block__legacy pytorch/split_block__dynamo)
+              pytorch/split_block__legacy pytorch/split_block__dynamo
+              pytorch/attention_block__legacy pytorch/attention_block__dynamo)
     string(REPLACE "/" "__" vectors "${model}")
     string(REPLACE "/" "_" test_name "${model}")
     # MobileNetV2 is 52 layers deep: nullc and onnx runtime are each about 2.5e-5

@@ -175,6 +175,27 @@ class SplitBlock(nn.Module):
         return self.fc(torch.flatten(torch.cat([q, p], dim=1), 1))
 
 
+class AttentionBlock(nn.Module):
+    """CBAM's two attentions in miniature, then a sum-pool: the channel attention reads each channel's mean
+    and max over H and W through a shared MLP, the spatial attention each pixel's mean and max over the
+    channels through a 7x7 convolution, and the head adds up every pixel of each channel"""
+    def __init__(self):
+        super().__init__()
+        self.stem = nn.Conv2d(3, 8, 3, padding=1)
+        self.mlp = nn.Sequential(nn.Conv2d(8, 2, 1), nn.ReLU(), nn.Conv2d(2, 8, 1))
+        self.spatial = nn.Conv2d(2, 1, 7, padding=3)
+        self.fc = nn.Linear(8, 10)
+
+    def forward(self, x):
+        h = torch.relu(self.stem(x))
+        avg = h.mean(dim=(2, 3), keepdim=True)
+        peak = h.amax(dim=(2, 3), keepdim=True)
+        h = h * torch.sigmoid(self.mlp(avg) + self.mlp(peak))
+        maps = torch.cat([h.mean(dim=1, keepdim=True), h.amax(dim=1, keepdim=True)], dim=1)
+        h = h * torch.sigmoid(self.spatial(maps))
+        return self.fc(h.sum(dim=(2, 3)) / 64.0)
+
+
 def no_rule(op):
     return f"({op}): no shape inference rule for this operator yet"
 
@@ -207,6 +228,9 @@ FIXTURES = [
     # chunk, split, strided slicing and flip
     ("split_block__legacy.onnx",  SplitBlock, (1, 3, 16, 16), "legacy", False, ("compiles", "")),
     ("split_block__dynamo.onnx",  SplitBlock, (1, 3, 16, 16), "dynamo", False, ("compiles", "")),
+    # mean, max and sum over the pixels and over the channels
+    ("attention_block__legacy.onnx", AttentionBlock, (1, 3, 8, 8), "legacy", False, ("compiles", "")),
+    ("attention_block__dynamo.onnx", AttentionBlock, (1, 3, 8, 8), "dynamo", False, ("compiles", "")),
 ]
 
 

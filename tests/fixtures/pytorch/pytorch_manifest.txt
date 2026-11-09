@@ -634,3 +634,63 @@ shape cat_1 1 8 7 7
 shape view 1 392
 shape y 1 10
 end
+model attention_block__legacy.onnx legacy torch 2.14.1 opset 20
+input x 1 3 8 8
+ops Add:1 Concat:1 Constant:6 Conv:6 Div:1 Gemm:1 Mul:2 ReduceMax:2 ReduceMean:2 ReduceSum:1 Relu:3 Sigmoid:2
+expect compiles
+shape /stem/Conv_output_0 1 8 8 8
+shape /Relu_output_0 1 8 8 8
+shape onnx::ReduceSum_13 2
+shape /Constant_output_0 2
+shape /ReduceMean_output_0 1 8 1 1
+shape /Constant_1_output_0 2
+shape /ReduceMax_output_0 1 8 1 1
+shape /mlp/mlp.0/Conv_output_0 1 2 1 1
+shape /mlp/mlp.1/Relu_output_0 1 2 1 1
+shape /mlp/mlp.2/Conv_output_0 1 8 1 1
+shape /mlp/mlp.0_1/Conv_output_0 1 2 1 1
+shape /mlp/mlp.1_1/Relu_output_0 1 2 1 1
+shape /mlp/mlp.2_1/Conv_output_0 1 8 1 1
+shape /Add_output_0 1 8 1 1
+shape /Sigmoid_output_0 1 8 1 1
+shape /Mul_output_0 1 8 8 8
+shape /Constant_2_output_0 1
+shape /ReduceMean_1_output_0 1 1 8 8
+shape /Constant_3_output_0 1
+shape /ReduceMax_1_output_0 1 1 8 8
+shape /Concat_output_0 1 2 8 8
+shape /spatial/Conv_output_0 1 1 8 8
+shape /Sigmoid_1_output_0 1 1 8 8
+shape /Mul_1_output_0 1 8 8 8
+shape /ReduceSum_output_0 1 8
+shape /Constant_4_output_0
+shape /Div_output_0 1 8
+shape y 1 10
+end
+model attention_block__dynamo.onnx dynamo torch 2.14.1 opset 20
+input x 1 3 8 8
+ops Add:1 Concat:1 Conv:6 Div:1 Gemm:1 Mul:2 ReduceMax:2 ReduceMean:2 ReduceSum:1 Relu:3 Sigmoid:2
+expect compiles
+shape conv2d 1 8 8 8
+shape relu 1 8 8 8
+shape mean 1 8 1 1
+shape amax 1 8 1 1
+shape conv2d_1 1 2 1 1
+shape relu_1 1 2 1 1
+shape conv2d_2 1 8 1 1
+shape conv2d_3 1 2 1 1
+shape relu_2 1 2 1 1
+shape conv2d_4 1 8 1 1
+shape add 1 8 1 1
+shape sigmoid 1 8 1 1
+shape mul 1 8 8 8
+shape mean_1 1 1 8 8
+shape amax_1 1 1 8 8
+shape cat 1 2 8 8
+shape conv2d_5 1 1 8 8
+shape sigmoid_1 1 1 8 8
+shape mul_1 1 8 8 8
+shape sum_1 1 8
+shape div 1 8
+shape y 1 10
+end

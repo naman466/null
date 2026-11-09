@@ -1331,6 +1331,35 @@ TEST(shape_reduce_mean_errors) {
     CHECK(contains(shape_error(flags), "must be numeric"));
 }
 
+TEST(shape_reduce_sum_and_max) {
+    // the same rule as ReduceMean
+    for (OpType op : {OpType::ReduceSum, OpType::ReduceMax}) {
+        Graph g = reduce_graph({2, 3, 4}, {0, -1});
+        g.nodes[0].op = op;
+        CHECK_EQ(reduce_out(g), (Shape{1, 3, 1}));
+        Graph flat = reduce_graph({2, 3, 4}, {0, -1});
+        flat.nodes[0].op = op;
+        CHECK_EQ(reduce_out(flat, 0), (Shape{3}));
+        Graph all = one_node(op, {{2, 3}});
+        CHECK_EQ(reduce_out(all, 0), (Shape{}));
+        CHECK_EQ(reduced_axes(all.nodes[0], all), (std::vector<bool>{true, true}));
+        Graph empty = reduce_graph({2, 0, 3}, {1});
+        empty.nodes[0].op = op;
+        CHECK_EQ(reduce_out(empty, 0), (Shape{2, 3}));
+    }
+    // ReduceMax has the attribute form up to opset 17
+    Graph max = reduce_graph({2, 3, 4}, {1}, false);
+    max.nodes[0].op = OpType::ReduceMax;
+    CHECK_EQ(reduce_out(max), (Shape{2, 1, 4}));
+    // ReduceSum has taken axes as an input since opset 13, the oldest the frontend reads
+    Graph sum = reduce_graph({2, 3, 4}, {1}, false);
+    sum.nodes[0].op = OpType::ReduceSum;
+    CHECK(contains(shape_error(sum), "axes must be an input from opset 13 on, not an attribute"));
+    Graph twice = reduce_graph({2, 3}, {0, -2});
+    twice.nodes[0].op = OpType::ReduceMax;
+    CHECK(contains(shape_error(twice), "name dim 0 twice"));
+}
+
 TEST(shape_global_average_pool) {
     Graph g = one_node(OpType::GlobalAveragePool, {{1, 16, 32, 32}});
     infer_shapes(g);
