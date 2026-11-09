@@ -93,7 +93,8 @@ public:
         std::vector<const Node*> order = g_.sorted_nodes();
         // a node no output depends on gets no code, even unoptimised: its
         // weights would be arrays nothing reads, which -Werror rejects
-        std::set<std::string> needed(g_.outputs.begin(), g_.outputs.end());
+        std::set<std::string>& needed = needed_;
+        needed.insert(g_.outputs.begin(), g_.outputs.end());
         std::set<const Node*> wanted;
         for (auto it = order.rbegin(); it != order.rend(); ++it) {
             bool used = false;
@@ -120,6 +121,7 @@ private:
     std::map<std::string, std::string> expr_;   // tensor name -> C expression
     std::set<std::string> idents_;              // every C identifier used
     std::set<std::string> parts_ = {"core"};    // runtime parts the code calls
+    std::set<std::string> needed_;              // tensors some graph output depends on
     std::set<std::string> read_;                // tensors some kernel or output copy reads
     std::ostringstream decls_, body_;
     std::vector<std::string> params_;
@@ -306,7 +308,9 @@ private:
 
     void emit_node(const Node& n) {
         body_ << "    /* " << comment_text(n.name) << ": " << optype_to_str(n.op) << " */\n";
-        if (const char* part = runtime_part(n.op)) parts_.insert(part);
+        // shape arithmetic computed at compile time calls no kernel
+        const bool computed = !n.outputs.empty() && computed_value(g_, n.outputs[0]).has_value();
+        if (const char* part = runtime_part(n.op); part && !computed) parts_.insert(part);
         switch (n.op) {
             case OpType::Relu:    emit_unary(n, "relu"); break;
             case OpType::Sigmoid: emit_unary(n, "sigmoid"); break;
@@ -317,10 +321,13 @@ private:
             case OpType::Abs:     emit_unary(n, "abs"); break;
             case OpType::Neg:     emit_unary(n, "neg"); break;
             case OpType::Clip: emit_clip(n); break;
-            case OpType::Add: emit_binary(n, "add"); break;
-            case OpType::Sub: emit_binary(n, "sub"); break;
-            case OpType::Mul: emit_binary(n, "mul"); break;
-            case OpType::Div: emit_binary(n, "div"); break;
+            case OpType::Add:
+            case OpType::Sub:
+            case OpType::Mul:
+            case OpType::Div:
+                if (emit_computed(n)) break;      // shape arithmetic, done at compile time
+                emit_binary(n, n.op == OpType::Add ? "add" : n.op == OpType::Sub ? "sub" : n.op == OpType::Mul ? "mul" : "div");
+                break;
             case OpType::Pow: emit_binary(n, "pow"); break;
             case OpType::Gemm:    emit_gemm(n); break;
             case OpType::MatMul:  emit_matmul(n); break;
@@ -332,6 +339,8 @@ private:
             case OpType::LayerNormalization: emit_layernorm(n); break;
             case OpType::BatchNormalization: emit_batchnorm(n); break;
             case OpType::Transpose: emit_transpose(n); break;
+            case OpType::Slice:
+            case OpType::Split:     emit_slices(n); break;
             case OpType::Reshape:
             case OpType::Flatten:
             case OpType::Identity:
@@ -368,8 +377,8 @@ private:
 
     // an int64 output whose value shape inference computed, like a Reshape
     // target built from Shape: it exists only at compile time, so no code
-    bool emit_computed(const Node& n) {
-        const std::string& out = n.outputs.at(0);
+    bool emit_computed(const Node& n, size_t k = 0) {
+        const std::string& out = n.outputs.at(k);
         if (info(out).dtype != DType::INT64) return false;
         std::optional<std::vector<int64_t>> v = computed_value(g_, out);
         if (!v && info(out).num_elements() != 0) return false;
@@ -682,6 +691,70 @@ private:
         }
     }
 
+    // Slice, and each output of Split, the one some graph output needs: an
+    // int64 shape value computed at compile time, or a float box of the input
+    void emit_slices(const Node& n) {
+        std::vector<SliceRegion> regions = slice_regions(n, g_);
+        for (size_t k = 0; k < n.outputs.size(); ++k) {
+            const std::string& out = n.outputs[k];
+            if (out.empty()) continue;
+            if (!needed_.count(out)) {
+                body_ << "    /* " << comment_text(out) << ": no output depends on it */\n";
+                continue;
+            }
+            if (emit_computed(n, k)) continue;
+            if (info(out).dtype != DType::FLOAT32)
+                fail(where(n) + ": output '" + out + "' is " + dtype_name(info(out).dtype) +
+                     ", only float32 is supported (or int64 values known at compile time)");
+            emit_region(n, k, regions.at(k));
+        }
+    }
+
+    // dims of count 1 are dropped and neighbours that walk x contiguously
+    // merged. what is left of a box that is one contiguous run of x is a
+    // pointer into it, and no data moves; anything else is a strided copy
+    void emit_region(const Node& n, size_t k, const SliceRegion& r) {
+        const auto& s = info(n.inputs.at(0)).shape;
+        const std::string& out = n.outputs[k];
+        int64_t total = 1;
+        for (int64_t c : r.count) total *= c;
+        if (total == 0) {               // nothing to take, so x is not read
+            write(n, k);
+            body_ << "    /* " << comment_text(out) << " is empty */\n";
+            return;
+        }
+        std::vector<int64_t> stride(s.size(), 1);
+        for (size_t d = s.size(); d-- > 1;) stride[d - 1] = stride[d] * s[d];
+        int64_t offset = 0;
+        std::vector<int64_t> shape, x_strides;
+        for (size_t d = 0; d < s.size(); ++d) {
+            offset += r.start[d] * stride[d];
+            if (r.count[d] == 1) continue;
+            const int64_t step = r.step[d] * stride[d];
+            if (!shape.empty() && x_strides.back() == step * r.count[d]) {
+                shape.back() *= r.count[d];
+                x_strides.back() = step;
+            } else {
+                shape.push_back(r.count[d]);
+                x_strides.push_back(step);
+            }
+        }
+        std::string x = read(n, 0);
+        if (shape.empty() || (shape.size() == 1 && x_strides[0] == 1)) {
+            alias(out, n.inputs[0], offset ? "(" + x + " + " + std::to_string(offset) + ")" : x);
+            body_ << "    /* " << comment_text(out) << " is " << expr_[out] << ", no data moves */\n";
+            return;
+        }
+        if (shape.size() > NULL_MAX_RANK)
+            fail(where(n) + ": the slice has more than " + std::to_string(NULL_MAX_RANK) + " separate dims");
+        parts_.insert("layout");
+        std::string y = write(n, k);
+        std::string shape_id = int_array(out + "_shape", shape);
+        std::string strides_id = int_array(out + "_x_strides", x_strides);
+        body_ << "    null_slice_f32(" << x << ", " << y << ", " << shape.size() << ", " << shape_id << ", "
+              << strides_id << ", " << offset << ");\n";
+    }
+
     void emit_softmax(const Node& n) {
         std::string x = read(n, 0), y = write(n, 0);
         const auto& s = info(n.inputs[0]).shape;
@@ -743,8 +816,9 @@ private:
         out << "\nvoid " << opt_.function_name << "(";
         for (size_t i = 0; i < params_.size(); ++i) out << (i ? ", " : "") << params_[i];
         out << ") {\n    int64_t i;\n";
-        // an input nothing reads (unused by the model, or read only by a node no
-        // output depends on) would be an unused parameter, which -Werror rejects
+        // an input nothing reads (unused by the model, read only by a node no
+        // output depends on, or by a Slice that takes none of it) would be an
+        // unused parameter, which -Werror rejects
         for (auto& name : g_.inputs)
             if (!read_.count(name)) out << "    (void)" << expr_[name] << ";   /* not read */\n";
         out << body_.str() << "    /* outputs */\n" << tail.str() << "}\n";

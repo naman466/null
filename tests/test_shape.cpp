@@ -936,6 +936,188 @@ TEST(shape_concat) {
     CHECK_EQ(value(v, "y"), (std::vector<int64_t>{1, 2, 9, 3, 4, 8}));
 }
 
+// x -> Slice(starts, ends, axes?, steps?) -> out0, every list an int64 initializer
+static Graph slice_graph(const Shape& x, const std::vector<int64_t>& starts, const std::vector<int64_t>& ends,
+                         const std::optional<std::vector<int64_t>>& axes = std::nullopt,
+                         const std::optional<std::vector<int64_t>>& steps = std::nullopt) {
+    Graph g("slice");
+    g.inputs = {"x"};
+    g.outputs = {"out0"};
+    g.add_value_info(Tensor("x", x, DType::FLOAT32));
+    std::vector<std::string> ins = {"x", "starts", "ends"};
+    add_ints(g, "starts", starts, {static_cast<int64_t>(starts.size())});
+    add_ints(g, "ends", ends, {static_cast<int64_t>(ends.size())});
+    if (axes || steps) {
+        ins.push_back(axes ? "axes" : "");
+        if (axes) add_ints(g, "axes", *axes, {static_cast<int64_t>(axes->size())});
+    }
+    if (steps) {
+        ins.push_back("steps");
+        add_ints(g, "steps", *steps, {static_cast<int64_t>(steps->size())});
+    }
+    g.add_node(Node("n", OpType::Slice, ins, {"out0"}));
+    return g;
+}
+
+TEST(shape_slice) {
+    auto out = [](Graph g) {
+        infer_shapes(g);
+        return info(g, "out0").shape;
+    };
+    using V = std::vector<int64_t>;
+    CHECK_EQ(out(slice_graph({5, 6}, {1}, {4})), (Shape{3, 6}));                       // axes default to 0, 1, ..
+    CHECK_EQ(out(slice_graph({5, 6}, {1, 2}, {4, 6})), (Shape{3, 4}));
+    CHECK_EQ(out(slice_graph({5, 6}, {-2}, {INT64_MAX}, V{1})), (Shape{5, 2}));       // the last two columns
+    CHECK_EQ(out(slice_graph({5, 6}, {-100}, {100}, V{-1})), (Shape{5, 6}));          // clamped to the dim
+    CHECK_EQ(out(slice_graph({5, 6}, {4}, {2}, V{0})), (Shape{0, 6}));                // end before start: empty
+    CHECK_EQ(out(slice_graph({5, 6}, {1}, {6}, V{1}, V{2})), (Shape{5, 3}));          // 1, 3, 5
+    CHECK_EQ(out(slice_graph({5, 6}, {0}, {6}, V{1}, V{4})), (Shape{5, 2}));          // 0, 4
+    CHECK_EQ(out(slice_graph({5, 6}, {-1}, {INT64_MIN}, V{0}, V{-1})), (Shape{5, 6}));  // reversed
+    CHECK_EQ(out(slice_graph({5, 6}, {100}, {-100}, V{1}, V{-2})), (Shape{5, 3}));    // 5, 3, 1
+    CHECK_EQ(out(slice_graph({5, 6}, {3}, {0}, V{0}, V{-1})), (Shape{3, 6}));         // 3, 2, 1: end 0 is excluded
+    CHECK_EQ(out(slice_graph({5, 6}, {0}, {INT64_MAX}, V{0}, V{INT64_MAX})), (Shape{1, 6}));
+    CHECK_EQ(out(slice_graph({5, 6}, {4}, {INT64_MIN}, V{0}, V{INT64_MIN})), (Shape{1, 6}));
+    CHECK_EQ(out(slice_graph({0, 6}, {0}, {1}, V{0}, V{-1})), (Shape{0, 6}));         // an empty dim stays empty
+    // stepping backwards, a start before the dim is clamped to 0, so element 0 is taken
+    // (numpy and Python take nothing), and an end after it to dim - 1, so nothing is
+    // (onnxruntime reads INT64_MAX there as "to the start" and takes the whole dim)
+    CHECK_EQ(out(slice_graph({5, 6}, {-100}, {INT64_MIN}, V{0}, V{-1})), (Shape{1, 6}));
+    CHECK_EQ(out(slice_graph({5, 2}, {3}, {INT64_MAX}, V{1}, V{-1})), (Shape{5, 0}));
+    CHECK_EQ(out(slice_graph({-1, 6}, {1}, {3}, V{1})), (Shape{-1, 2}));
+    CHECK_EQ(out(slice_graph({-1, 6}, {1}, {3}, V{0})), (Shape{-1, 6}));             // known once the batch is
+
+    Graph zero = slice_graph({5, 6}, {0}, {1}, V{0}, V{0});
+    CHECK(contains(shape_error(zero), "steps [0] has a 0"));
+    Graph twice = slice_graph({5, 6}, {0, 0}, {1, 1}, V{1, -1});
+    CHECK(contains(shape_error(twice), "axes [1, -1] name dim 1 twice"));
+    Graph range = slice_graph({5, 6}, {0}, {1}, V{2});
+    CHECK(contains(shape_error(range), "axis 2 is out of range [-2, 1] for rank 2"));
+    Graph lengths = slice_graph({5, 6}, {0, 0}, {1});
+    CHECK(contains(shape_error(lengths), "must have the same length"));
+    Graph scalar = slice_graph({}, {0}, {1});
+    CHECK(contains(shape_error(scalar), "data must have rank >= 1"));
+    Graph runtime = one_node(OpType::Slice, {{5, 6}, {1}, {1}});
+    CHECK(contains(shape_error(runtime), "input 1 ('in1') must be int64"));
+}
+
+TEST(shape_slice_values) {
+    // Shape -> Slice, as exporters take part of a shape: [2, 3, 4, 5][1:-1] and its reverse
+    Graph g("v");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {2, 3, 4, 5}, DType::FLOAT32));
+    add_ints(g, "one", {1}, {1});
+    add_ints(g, "minus_one", {-1}, {1});
+    add_ints(g, "zero", {0}, {1});
+    add_ints(g, "big", {INT64_MIN}, {1});
+    g.add_node(Node("shape", OpType::Shape, {"x"}, {"s"}));
+    g.add_node(Node("mid", OpType::Slice, {"s", "one", "minus_one"}, {"m"}));
+    g.add_node(Node("rev", OpType::Slice, {"s", "minus_one", "big", "zero", "minus_one"}, {"r"}));
+    infer_shapes(g);
+    CHECK_EQ(value(g, "m"), (std::vector<int64_t>{3, 4}));
+    CHECK_EQ(value(g, "r"), (std::vector<int64_t>{5, 4, 3, 2}));
+
+    // a 2-D int64 value, every other column backwards from the third
+    Graph m("m");
+    m.outputs = {"y"};
+    add_ints(m, "a", {1, 2, 3, 4, 5, 6}, {2, 3});
+    add_ints(m, "st", {2}, {1});
+    add_ints(m, "en", {-4}, {1});
+    add_ints(m, "ax", {1}, {1});
+    add_ints(m, "sp", {-2}, {1});
+    m.add_node(Node("n", OpType::Slice, {"a", "st", "en", "ax", "sp"}, {"y"}));
+    infer_shapes(m);
+    CHECK_EQ(value(m, "y"), (std::vector<int64_t>{3, 1, 6, 4}));
+}
+
+TEST(shape_split) {
+    using V = std::vector<int64_t>;
+    auto split = [](const Shape& x, size_t outputs, int64_t axis, const std::optional<V>& sizes,
+                    std::optional<int64_t> num_outputs = std::nullopt) {
+        Graph g = one_node(OpType::Split, {x}, DType::FLOAT32, outputs);
+        if (sizes) {
+            add_ints(g, "sizes", *sizes, {static_cast<int64_t>(sizes->size())});
+            g.nodes[0].inputs.push_back("sizes");
+        }
+        g.nodes[0].add_attr("axis", axis);
+        if (num_outputs) g.nodes[0].add_attr("num_outputs", *num_outputs);
+        return g;
+    };
+    auto shapes = [](Graph g) {
+        infer_shapes(g);
+        std::vector<Shape> s;
+        for (const std::string& o : g.nodes[0].outputs) s.push_back(info(g, o).shape);
+        return s;
+    };
+    CHECK_EQ(shapes(split({6, 4}, 3, 0, std::nullopt)), (std::vector<Shape>{{2, 4}, {2, 4}, {2, 4}}));
+    CHECK_EQ(shapes(split({6, 4}, 2, -1, V{1, 3})), (std::vector<Shape>{{6, 1}, {6, 3}}));
+    CHECK_EQ(shapes(split({6, 4}, 3, 0, V{0, 6, 0})), (std::vector<Shape>{{0, 4}, {6, 4}, {0, 4}}));
+    // opset 18: num_outputs, the last piece smaller when the dim does not divide
+    CHECK_EQ(shapes(split({7, 4}, 3, 0, std::nullopt, 3)), (std::vector<Shape>{{3, 4}, {3, 4}, {1, 4}}));
+    CHECK_EQ(shapes(split({-1, 4}, 2, 0, std::nullopt)), (std::vector<Shape>{{-1, 4}, {-1, 4}}));
+
+    Graph uneven = split({7, 4}, 2, 0, std::nullopt);
+    CHECK(contains(shape_error(uneven), "dim 0 of size 7 cannot be split into 2 equal pieces"));
+    Graph sum = split({6, 4}, 2, 0, V{1, 2});
+    CHECK(contains(shape_error(sum), "split [1, 2] adds up to 3, but dim 0 has size 6"));
+    Graph count = split({6, 4}, 2, 0, V{1, 2, 3});
+    CHECK(contains(shape_error(count), "split [1, 2, 3] has 3 sizes for 2 outputs"));
+    Graph negative = split({6, 4}, 2, 0, V{-1, 7});
+    CHECK(contains(shape_error(negative), "has a negative size"));
+    Graph num = split({6, 4}, 2, 0, std::nullopt, 3);
+    CHECK(contains(shape_error(num), "num_outputs is 3, but the node has 2 outputs"));
+    Graph too_many = split({5, 4}, 4, 0, std::nullopt, 4);
+    CHECK(contains(shape_error(too_many), "dim 0 of size 5 cannot be split into 4 pieces of 2"));
+
+    // int64 values split too
+    Graph v("v");
+    v.outputs = {"a"};
+    add_ints(v, "s", {1, 2, 3, 4, 5}, {5});
+    add_ints(v, "sizes", {2, 3}, {2});
+    v.add_node(Node("n", OpType::Split, {"s", "sizes"}, {"a", "b"}));
+    infer_shapes(v);
+    CHECK_EQ(value(v, "a"), (std::vector<int64_t>{1, 2}));
+    CHECK_EQ(value(v, "b"), (std::vector<int64_t>{3, 4, 5}));
+}
+
+TEST(shape_int_arithmetic_values) {
+    // PyTorch's chunk(2) on 9 channels: (C + 1) / 2 * 1 from Shape
+    Graph g("chunk");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {1, 9, 4}, DType::FLOAT32));
+    add_ints(g, "idx", {1}, {1});
+    add_ints(g, "one", {1}, {});
+    add_ints(g, "two", {2}, {});
+    g.add_node(Node("shape", OpType::Shape, {"x"}, {"s"}));
+    g.add_node(Node("gather", OpType::Gather, {"s", "idx"}, {"c"}));
+    g.add_node(Node("add", OpType::Add, {"c", "one"}, {"c1"}));
+    g.add_node(Node("div", OpType::Div, {"c1", "two"}, {"half"}));
+    g.add_node(Node("mul", OpType::Mul, {"half", "one"}, {"end"}));
+    g.add_node(Node("sub", OpType::Sub, {"s", "two"}, {"less"}));         // broadcasts the scalar
+    infer_shapes(g);
+    CHECK_EQ(value(g, "half"), (std::vector<int64_t>{5}));
+    CHECK_EQ(value(g, "end"), (std::vector<int64_t>{5}));
+    CHECK_EQ(value(g, "less"), (std::vector<int64_t>{-1, 7, 2}));
+
+    // a division whose rounding onnxruntime and numpy disagree on is left unknown, as is overflow
+    auto computed = [](int64_t a, int64_t b, OpType op) {
+        Graph d("d");
+        d.outputs = {"y"};
+        add_ints(d, "a", {a}, {});
+        add_ints(d, "b", {b}, {});
+        d.add_node(Node("n", op, {"a", "b"}, {"y"}));
+        infer_shapes(d);
+        return computed_value(d, "y");
+    };
+    CHECK_EQ(*computed(-6, 3, OpType::Div), (std::vector<int64_t>{-2}));     // exact
+    CHECK_EQ(*computed(-7, -2, OpType::Div), (std::vector<int64_t>{3}));     // same signs
+    CHECK(!computed(-7, 2, OpType::Div));                                    // -3 or -4
+    CHECK(!computed(7, 0, OpType::Div));
+    CHECK(!computed(INT64_MAX, 1, OpType::Add));
+    CHECK(!computed(INT64_MIN, -1, OpType::Div));
+}
+
 // x[?, 1, 28, 28] -> Shape -> Gather(0) -> Unsqueeze(0) -> Concat with [-1] -> Reshape,
 // what PyTorch's legacy exporter writes for x.view(x.size(0), -1)
 static Graph view_chain() {

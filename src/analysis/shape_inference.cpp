@@ -158,6 +158,16 @@ private:
 
 using Rule = std::vector<TypeInfo> (*)(const Context&);
 
+// product of dims, -1 if any is dynamic
+int64_t product(const std::vector<int64_t>& dims, size_t begin, size_t end) {
+    int64_t p = 1;
+    for (size_t i = begin; i < end; ++i) {
+        if (dims[i] < 0) return -1;
+        if (__builtin_mul_overflow(p, dims[i], &p)) return -1;
+    }
+    return p;
+}
+
 // RULES - ELEMENTWISE
 
 // same type and shape as input 0, numeric input
@@ -213,16 +223,64 @@ std::vector<TypeInfo> cast(const Context& c) {
     return {{dt, c.in(0).shape}};
 }
 
-// Add, Sub, Mul, Div: same types, broadcast shapes
+// one int64 result of Add, Sub, Mul or Div, if it is certain: nullopt on
+// overflow, division by zero, or a division whose rounding direction matters
+// (onnxruntime truncates, numpy floors; they agree when the operands have the
+// same sign or the division is exact)
+std::optional<int64_t> int_arith(OpType op, int64_t a, int64_t b) {
+    int64_t r;
+    switch (op) {
+        case OpType::Add: if (__builtin_add_overflow(a, b, &r)) return std::nullopt; return r;
+        case OpType::Sub: if (__builtin_sub_overflow(a, b, &r)) return std::nullopt; return r;
+        case OpType::Mul: if (__builtin_mul_overflow(a, b, &r)) return std::nullopt; return r;
+        case OpType::Div:
+            if (b == 0 || (a == INT64_MIN && b == -1)) return std::nullopt;
+            if ((a < 0) != (b < 0) && a % b != 0) return std::nullopt;
+            return a / b;
+        default: return std::nullopt;
+    }
+}
+
+// Add, Sub, Mul, Div: same types, broadcast shapes. int64 values are computed
+// when both inputs have them: exporters do shape arithmetic this way, like
+// PyTorch's chunk, which splits at (C + 1) / 2
 std::vector<TypeInfo> binary_arith(const Context& c) {
     c.require_inputs(2, 2);
     c.require_numeric(0);
     c.require_same_dtype(0, 1);
+    std::vector<int64_t> out;
     try {
-        return {{c.in(0).dtype, broadcast_shapes(c.in(0).shape, c.in(1).shape)}};
+        out = broadcast_shapes(c.in(0).shape, c.in(1).shape);
     } catch (const ShapeError& e) {
         c.fail(e.what());
     }
+    TypeInfo result{c.in(0).dtype, out, std::nullopt};
+    std::optional<Value> a = c.value_of(0), b = c.value_of(1);
+    const int64_t total = product(out, 0, out.size());
+    if (!a || !b || total < 0 || total > kMaxValueElements) return {result};
+    // output index -> input index: dims are aligned from the right, and a
+    // dim of 1 in an input repeats its one element
+    auto at = [&](const std::vector<int64_t>& s, int64_t k) {
+        int64_t index = 0, scale = 1;
+        for (size_t d = out.size(); d-- > 0;) {
+            const int64_t pos = k % out[d];
+            k /= out[d];
+            const size_t from_end = out.size() - 1 - d;
+            if (from_end >= s.size()) continue;
+            const int64_t dim = s[s.size() - 1 - from_end];
+            if (dim != 1) index += pos * scale;
+            scale *= dim;
+        }
+        return static_cast<size_t>(index);
+    };
+    Value v;
+    for (int64_t k = 0; k < total; ++k) {
+        const std::optional<int64_t>& x = (*a)[at(c.in(0).shape, k)];
+        const std::optional<int64_t>& y = (*b)[at(c.in(1).shape, k)];
+        v.push_back(x && y ? int_arith(c.node.op, *x, *y) : std::nullopt);
+    }
+    result.value = v;
+    return {result};
 }
 
 // Pow(base, exponent): result has the base's type, the exponent may differ
@@ -347,16 +405,6 @@ std::vector<TypeInfo> gemm(const Context& c) {
 }
 
 // RULES - SHAPE MANIPULATION
-
-// product of dims, -1 if any is dynamic
-int64_t product(const std::vector<int64_t>& dims, size_t begin, size_t end) {
-    int64_t p = 1;
-    for (size_t i = begin; i < end; ++i) {
-        if (dims[i] < 0) return -1;
-        if (__builtin_mul_overflow(p, dims[i], &p)) return -1;
-    }
-    return p;
-}
 
 // normalise an axis attribute in [-rank, rank + extra) to [0, rank + extra)
 int64_t normalize_axis(const Context& c, int64_t axis, int64_t rank, int64_t extra) {
@@ -622,6 +670,177 @@ std::vector<TypeInfo> concat(const Context& c) {
     return {result};
 }
 
+// RULES - SLICING
+//
+// Slice and each output of Split take a box of the input: per dim a first
+// index, a step and a count. the shape rule, the values computed at compile
+// time and the emitter all work from that one description
+
+SliceRegion whole(const std::vector<int64_t>& x) {
+    SliceRegion r;
+    r.start.assign(x.size(), 0);
+    r.step.assign(x.size(), 1);
+    r.count = x;
+    return r;
+}
+
+// an optional 1-D int64 input known at compile time. (the attribute forms of
+// Slice before opset 10 and Split before opset 13 never get here: the
+// frontend accepts opset 13 and later)
+std::optional<std::vector<int64_t>> ints_input(const Context& c, size_t i, const char* what) {
+    if (!c.has(i)) return std::nullopt;
+    if (c.in(i).shape.size() != 1) c.fail(std::string(what) + " must be 1-D, got " + c.in(i).shape_str());
+    return c.const_ints(i);
+}
+
+// Slice(data, starts, ends, axes?, steps?): for each named axis, starts and
+// ends (negative ones count from the end) are clamped to the dim, then every
+// step-th index from start up to, not including, end is taken; a negative step
+// walks backwards. axes default to 0, 1, ..., steps to 1
+SliceRegion slice_region(const Context& c) {
+    c.require_inputs(3, 5);
+    const std::vector<int64_t>& x = c.in(0).shape;
+    const int64_t rank = static_cast<int64_t>(x.size());
+    if (rank == 0) c.fail("data must have rank >= 1, got a scalar");
+    auto required = [&](size_t i, const char* name) {
+        std::optional<std::vector<int64_t>> v = ints_input(c, i, name);
+        if (!v) c.fail(std::string(name) + " is required");
+        return *v;
+    };
+    std::vector<int64_t> starts = required(1, "starts"), ends = required(2, "ends");
+    std::vector<int64_t> axes, steps(starts.size(), 1);
+    if (auto a = ints_input(c, 3, "axes")) axes = *a;
+    else for (size_t i = 0; i < starts.size(); ++i) axes.push_back(static_cast<int64_t>(i));
+    if (auto s = ints_input(c, 4, "steps")) steps = *s;
+    if (ends.size() != starts.size() || axes.size() != starts.size() || steps.size() != starts.size())
+        c.fail("starts " + shape_of(starts) + ", ends " + shape_of(ends) + ", axes " + shape_of(axes) +
+               " and steps " + shape_of(steps) + " must have the same length");
+
+    SliceRegion r = whole(x);
+    std::vector<bool> seen(x.size(), false);
+    for (size_t i = 0; i < axes.size(); ++i) {
+        const size_t d = static_cast<size_t>(normalize_axis(c, axes[i], rank, 0));
+        if (seen[d]) c.fail("axes " + shape_of(axes) + " name dim " + std::to_string(d) + " twice");
+        seen[d] = true;
+        const int64_t step = steps[i], dim = x[d];
+        if (step == 0) c.fail("steps " + shape_of(steps) + " has a 0");
+        r.step[d] = step;
+        if (dim < 0) {                      // known once the dynamic dims are fixed
+            r.start[d] = starts[i];
+            r.count[d] = -1;
+            continue;
+        }
+        if (dim == 0) {
+            r.start[d] = r.count[d] = 0;
+            continue;
+        }
+        // negative positions count from the end; adding dim to one cannot overflow
+        int64_t start = starts[i] < 0 ? starts[i] + dim : starts[i];
+        int64_t end = ends[i] < 0 ? ends[i] + dim : ends[i];
+        if (step > 0) {
+            start = std::clamp<int64_t>(start, 0, dim);
+            end = std::clamp<int64_t>(end, 0, dim);
+            r.count[d] = end > start ? (end - start - 1) / step + 1 : 0;
+        } else {
+            start = std::clamp<int64_t>(start, 0, dim - 1);
+            end = std::clamp<int64_t>(end, -1, dim - 1);
+            const int64_t back = step == INT64_MIN ? INT64_MAX : -step;
+            r.count[d] = start > end ? (start - end - 1) / back + 1 : 0;
+        }
+        r.start[d] = r.count[d] ? start : 0;
+    }
+    return r;
+}
+
+// Split(input, split?) along axis (default 0): consecutive pieces, one per
+// output, of the sizes in split. without it, equal pieces; with opset 18's
+// num_outputs the last piece may be smaller
+std::vector<SliceRegion> split_regions(const Context& c) {
+    c.require_inputs(1, 2);
+    const std::vector<int64_t>& x = c.in(0).shape;
+    const int64_t rank = static_cast<int64_t>(x.size());
+    if (rank == 0) c.fail("input must have rank >= 1, got a scalar");
+    const size_t axis = static_cast<size_t>(normalize_axis(c, c.node.attr_int("axis", 0), rank, 0));
+    const int64_t dim = x[axis], outputs = static_cast<int64_t>(c.node.outputs.size());
+    if (outputs == 0) c.fail("has no outputs");
+    std::vector<int64_t> sizes;
+    if (auto s = ints_input(c, 1, "split")) {
+        if (c.node.has_attr("num_outputs")) c.fail("split and num_outputs are both given");
+        sizes = *s;
+        if (static_cast<int64_t>(sizes.size()) != outputs)
+            c.fail("split " + shape_of(sizes) + " has " + std::to_string(sizes.size()) + " sizes for " +
+                   std::to_string(outputs) + " outputs");
+        int64_t sum = 0;
+        for (int64_t v : sizes) {
+            if (v < 0) c.fail("split " + shape_of(sizes) + " has a negative size");
+            if (__builtin_add_overflow(sum, v, &sum)) c.fail("split " + shape_of(sizes) + " overflows");
+        }
+        if (dim >= 0 && sum != dim)
+            c.fail("split " + shape_of(sizes) + " adds up to " + std::to_string(sum) + ", but dim " +
+                   std::to_string(axis) + " has size " + std::to_string(dim));
+    } else if (dim < 0) {
+        sizes.assign(static_cast<size_t>(outputs), -1);
+    } else if (c.node.has_attr("num_outputs")) {
+        if (c.node.attr_int("num_outputs") != outputs)
+            c.fail("num_outputs is " + std::to_string(c.node.attr_int("num_outputs")) + ", but the node has " +
+                   std::to_string(outputs) + " outputs");
+        const int64_t chunk = (dim + outputs - 1) / outputs, last = dim - chunk * (outputs - 1);
+        if (last < 0)
+            c.fail("dim " + std::to_string(axis) + " of size " + std::to_string(dim) + " cannot be split into " +
+                   std::to_string(outputs) + " pieces of " + std::to_string(chunk));
+        sizes.assign(static_cast<size_t>(outputs), chunk);
+        sizes.back() = last;
+    } else {
+        if (dim % outputs != 0)
+            c.fail("dim " + std::to_string(axis) + " of size " + std::to_string(dim) + " cannot be split into " +
+                   std::to_string(outputs) + " equal pieces");
+        sizes.assign(static_cast<size_t>(outputs), dim / outputs);
+    }
+
+    std::vector<SliceRegion> regions;
+    int64_t at = 0;
+    for (int64_t size : sizes) {
+        SliceRegion r = whole(x);
+        r.start[axis] = size < 0 ? 0 : at;
+        r.count[axis] = size;
+        at += size < 0 ? 0 : size;
+        regions.push_back(r);
+    }
+    return regions;
+}
+
+// the value of a region of input 0, if input 0 has one and every size is known
+std::optional<Value> region_value(const Context& c, const SliceRegion& r) {
+    const std::vector<int64_t>& x = c.in(0).shape;
+    std::optional<Value> data = c.value_of(0);
+    const int64_t total = product(r.count, 0, r.count.size());
+    if (!data || total < 0 || product(x, 0, x.size()) < 0) return std::nullopt;
+    std::vector<int64_t> stride(x.size(), 1), idx(x.size(), 0);
+    for (size_t d = x.size(); d-- > 1;) stride[d - 1] = stride[d] * x[d];
+    Value v;
+    for (int64_t k = 0; k < total; ++k) {
+        int64_t at = 0;
+        for (size_t d = 0; d < x.size(); ++d) at += (r.start[d] + idx[d] * r.step[d]) * stride[d];
+        v.push_back((*data)[static_cast<size_t>(at)]);
+        for (size_t d = x.size(); d-- > 0;) {
+            if (++idx[d] < r.count[d]) break;
+            idx[d] = 0;
+        }
+    }
+    return v;
+}
+
+std::vector<TypeInfo> slice(const Context& c) {
+    SliceRegion r = slice_region(c);
+    return {{c.in(0).dtype, r.count, region_value(c, r)}};
+}
+
+std::vector<TypeInfo> split(const Context& c) {
+    std::vector<TypeInfo> out;
+    for (const SliceRegion& r : split_regions(c)) out.push_back({c.in(0).dtype, r.count, region_value(c, r)});
+    return out;
+}
+
 // RULES - CONVOLUTION
 
 // Conv(x, w, b?), 2-D only: x [N, C, H, W], w [M, C / group, kH, kW], b [M]
@@ -825,6 +1044,8 @@ const std::unordered_map<OpType, Rule>& rules() {
         {OpType::Unsqueeze, unsqueeze},
         {OpType::Squeeze,   squeeze},
         {OpType::Concat,    concat},
+        {OpType::Slice,     slice},
+        {OpType::Split,     split},
         {OpType::LayerNormalization, layer_norm},
         {OpType::BatchNormalization, batch_norm},
         {OpType::Transpose,          transpose},
@@ -1016,6 +1237,12 @@ std::vector<int64_t> transpose_perm(const Node& node, size_t rank) {
 
 std::vector<bool> reduced_axes(const Node& node, const Graph& g) {
     return axes_to_reduce(Context(node, g));
+}
+
+std::vector<SliceRegion> slice_regions(const Node& node, const Graph& g) {
+    Context c(node, g);
+    if (node.op == OpType::Split) return split_regions(c);
+    return {slice_region(c)};
 }
 
 bool has_shape_rule(OpType op) {

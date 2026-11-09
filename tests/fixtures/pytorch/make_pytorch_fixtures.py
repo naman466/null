@@ -155,6 +155,26 @@ class DenseBlock(nn.Module):
         return self.fc(torch.flatten(torch.nn.functional.adaptive_avg_pool2d(x2, 1), 1))
 
 
+class SplitBlock(nn.Module):
+    """ShuffleNetV2's channel split, then cropping, striding, flipping and an uneven split: chunk keeps half
+    the channels and sends half through a branch, x[:, :, 1:-1:2, 1:-1:2] takes every other inner pixel,
+    flip reverses the columns (a negative step), and split([5, 3]) parts the channels to swap them"""
+    def __init__(self):
+        super().__init__()
+        self.stem = nn.Conv2d(3, 8, 3, padding=1)
+        self.branch = nn.Sequential(nn.Conv2d(4, 4, 1), nn.ReLU(), nn.Conv2d(4, 4, 3, padding=1, groups=4),
+                                    nn.Conv2d(4, 4, 1), nn.ReLU())
+        self.fc = nn.Linear(8 * 7 * 7, 10)
+
+    def forward(self, x):
+        h = torch.relu(self.stem(x))
+        a, b = h.chunk(2, dim=1)
+        h = torch.cat([a, self.branch(b)], dim=1)
+        h = torch.flip(h[:, :, 1:-1:2, 1:-1:2], dims=[3])
+        p, q = torch.split(h, [5, 3], dim=1)
+        return self.fc(torch.flatten(torch.cat([q, p], dim=1), 1))
+
+
 def no_rule(op):
     return f"({op}): no shape inference rule for this operator yet"
 
@@ -184,6 +204,9 @@ FIXTURES = [
     # torch.cat along the channels, twice
     ("dense_block__legacy.onnx",  DenseBlock, (1, 3, 16, 16), "legacy", False, ("compiles", "")),
     ("dense_block__dynamo.onnx",  DenseBlock, (1, 3, 16, 16), "dynamo", False, ("compiles", "")),
+    # chunk, split, strided slicing and flip
+    ("split_block__legacy.onnx",  SplitBlock, (1, 3, 16, 16), "legacy", False, ("compiles", "")),
+    ("split_block__dynamo.onnx",  SplitBlock, (1, 3, 16, 16), "dynamo", False, ("compiles", "")),
 ]
 
 

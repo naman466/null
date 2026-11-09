@@ -54,9 +54,11 @@ def run_generated(cc, c_file, x, out_shape, work):
         f"fwrite(y, 4, {size_out}, o); fclose(o); return 0; }}\n")
     exe = os.path.join(work, "m" + EXE)
     subprocess.run([cc, *CFLAGS, c_file, driver, "-o", exe], check=True)
-    np.ascontiguousarray(x, np.float32).tofile(os.path.join(work, "in.bin"))
+    data = np.ascontiguousarray(x, np.float32).reshape(-1)
+    (data if data.size else np.zeros(1, np.float32)).tofile(os.path.join(work, "in.bin"))   # the driver reads at least 1
     subprocess.run([exe, os.path.join(work, "in.bin"), os.path.join(work, "out.bin")], check=True)
-    return np.fromfile(os.path.join(work, "out.bin"), np.float32).reshape(out_shape)
+    out = np.fromfile(os.path.join(work, "out.bin"), np.float32)
+    return out[:int(np.prod(out_shape))].reshape(out_shape)    # an empty output still writes 1 element
 
 
 def run_ort(model, x):

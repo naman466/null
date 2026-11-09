@@ -66,6 +66,18 @@ std::vector<bool> reduced_axes(const Node& node, const Graph& g);
 // checked: the shape rule does that)
 std::vector<int64_t> transpose_perm(const Node& node, size_t rank);
 
+// the box of its input that a Slice, or one output of a Split, takes: per
+// input dim the first index, the step (negative walks backwards) and the
+// count. dims a Slice does not name are taken whole (start 0, step 1)
+struct SliceRegion {
+    std::vector<int64_t> start, step, count;
+};
+
+// one region per output (Slice has one), the same ones the shape rule used.
+// throws ShapeError naming the node if starts, ends, axes, steps or split are
+// invalid or not known at compile time
+std::vector<SliceRegion> slice_regions(const Node& node, const Graph& g);
+
 // infer the type and shape of every live node output, in execution order
 //   - every node input must already have metadata (graph inputs and
 //     initializers do, earlier node outputs get it from this pass)

@@ -1,5 +1,5 @@
 /*
- * null runtime, layout: transpose, gather and concat, which move data without
+ * null runtime, layout: transpose, gather, concat and slice, which move data without
  * arithmetic
  * needs null/core.h first; include runtime/null_runtime.h to get every part
  */
@@ -78,6 +78,23 @@ static inline void null_concat_f32(const float* x, float* y, int64_t outer, int6
         float* dst = y + (o * n_out + offset) * inner;
         for (i = 0; i < block; ++i) dst[i] = src[i];
     }
+}
+
+/* ---------------------------------------------------------------------------
+ * slice
+ *
+ * a strided box of x, for Slice and the outputs of Split: y, of shape
+ * out_shape, starts at element offset of x, and one step along output dim d
+ * moves x_strides[d] elements in x, negative for a slice that walks
+ * backwards. it is a transpose that starts somewhere else; the compiler drops
+ * dims of size 1 and merges dims that walk x contiguously, and gives no call
+ * at all for a box that is one contiguous run of x (a pointer into x).
+ *
+ * y must not alias x.
+ * ------------------------------------------------------------------------ */
+static inline void null_slice_f32(const float* x, float* y, int rank, const int64_t* out_shape,
+                                  const int64_t* x_strides, int64_t offset) {
+    null_transpose_f32(x + offset, y, rank, out_shape, x_strides);
 }
 
 #endif /* NULL_RUNTIME_LAYOUT_H */

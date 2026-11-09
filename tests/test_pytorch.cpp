@@ -147,7 +147,12 @@ void check_model(const std::string& file) {
     for (const auto& [name, want] : e.shapes) {
         const Tensor* t = g.get_tensor_info(name);
         if (!t) fail(file, "no shape for '" + name + "'");
-        if (t->shape != want)
+        // a dim onnx leaves unknown (-1) matches anything: its data propagation stops at
+        // shape arithmetic like the (C + 1) / 2 of PyTorch's chunk, which null computes.
+        // the end-to-end tests check those dims against onnxruntime's outputs
+        bool same = t->shape.size() == want.size();
+        for (size_t d = 0; same && d < want.size(); ++d) same = want[d] < 0 || t->shape[d] == want[d];
+        if (!same)
             fail(file, "'" + name + "' inferred as " + dims(t->shape) + ", onnx says " + dims(want));
     }
 }
@@ -164,7 +169,7 @@ TEST(pytorch_manifest_matches_files) {
     std::vector<std::string> listed;
     for (auto& [file, _] : manifest()) listed.push_back(file);
     CHECK_EQ(files, listed);
-    CHECK(files.size() >= 15u);
+    CHECK(files.size() >= 17u);
 }
 
 TEST(pytorch_mlp_legacy_dynamic)       { check_model("mlp__legacy_dyn.onnx"); }
@@ -179,6 +184,8 @@ TEST(pytorch_resnet18_small_legacy)    { check_model("resnet18_small__legacy.onn
 TEST(pytorch_resnet18_small_dynamo)    { check_model("resnet18_small__dynamo.onnx"); }
 TEST(pytorch_dense_block_legacy)       { check_model("dense_block__legacy.onnx"); }
 TEST(pytorch_dense_block_dynamo)       { check_model("dense_block__dynamo.onnx"); }
+TEST(pytorch_split_block_legacy)       { check_model("split_block__legacy.onnx"); }
+TEST(pytorch_split_block_dynamo)       { check_model("split_block__dynamo.onnx"); }
 
 TEST(pytorch_weights_held_once) {
     // a real model's weights live in initializers only: value_info has the

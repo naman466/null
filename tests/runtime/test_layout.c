@@ -69,7 +69,28 @@ static void test_concat(void) {
     CHECK(y[0] != y[0] && same_bits(y[1], -0.0f));
 }
 
+static void test_slice(void) {
+    /* x[3, 4] = 0..11; x[1:3, ::-2] starts at element 1*4 + 3, walks rows by 4 and columns by -2 */
+    float x[12], y[4];
+    float want[4] = {7, 5, 11, 9};
+    int64_t shape[2] = {2, 2}, strides[2] = {4, -2};
+    int64_t one[1] = {3}, unit[1] = {4};
+    int i;
+    for (i = 0; i < 12; ++i) x[i] = (float)i;
+    null_slice_f32(x, y, 2, shape, strides, 7);
+    CHECK(all_equal(y, want, 4));
+    /* one dim, every fourth element from 2: a column */
+    null_slice_f32(x, y, 1, one, unit, 2);
+    CHECK(y[0] == 2 && y[1] == 6 && y[2] == 10);
+    /* NaN and -0.0 are copied as they are */
+    x[7] = NAN;
+    x[5] = -0.0f;
+    null_slice_f32(x, y, 2, shape, strides, 7);
+    CHECK(y[0] != y[0] && same_bits(y[1], -0.0f));
+}
+
 static void run_layout_tests(void) {
+    test_slice();
     test_concat();
     test_transpose_matrix();
     test_transpose_three_dims();

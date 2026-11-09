@@ -405,6 +405,77 @@ TEST(emit_concat) {
     CHECK(contains(emit_c(g), "runtime/null/layout.h, embedded"));
 }
 
+// x -> Slice with constant starts, ends, axes and steps -> y
+static std::string emit_slice(const std::vector<int64_t>& shape, const std::vector<int64_t>& starts,
+                              const std::vector<int64_t>& ends, const std::vector<int64_t>& axes,
+                              const std::vector<int64_t>& steps) {
+    Graph g("slice");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", shape, DType::FLOAT32));
+    const std::vector<std::pair<std::string, std::vector<int64_t>>> ins = {
+        {"starts", starts}, {"ends", ends}, {"axes", axes}, {"steps", steps}};
+    for (const auto& [name, v] : ins) {
+        Tensor t(name, {static_cast<int64_t>(v.size())}, DType::INT64);
+        t.set_int64_data(v);
+        t.shape = {static_cast<int64_t>(v.size())};
+        g.add_initializer(t);
+    }
+    g.add_node(Node("s", OpType::Slice, {"x", "starts", "ends", "axes", "steps"}, {"y"}));
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    return emit_c(g, opt);
+}
+
+TEST(emit_slice) {
+    // rows 1 and 2 of [4, 3]: one contiguous run, a pointer into x
+    std::string rows = emit_slice({4, 3}, {1}, {3}, {0}, {1});
+    CHECK(contains(rows, "/* y is (in_x + 3), no data moves */"));
+    CHECK(!contains(rows, "null_slice_f32("));
+    // a single channel of [1, 4, 2, 2]: also contiguous, dims of size 1 do not matter
+    CHECK(contains(emit_slice({1, 4, 2, 2}, {2}, {3}, {1}, {1}), "/* y is (in_x + 8), no data moves */"));
+    // every other column, backwards from the last: a strided copy from element 3
+    std::string back = emit_slice({4, 4}, {-1}, {INT64_MIN}, {1}, {-2});
+    CHECK(contains(back, " * output y: float32[4, 2]"));
+    CHECK(contains(back, "static const int64_t k0_y_shape[2] = {4, 2};"));
+    CHECK(contains(back, "static const int64_t k1_y_x_strides[2] = {4, -2};"));
+    CHECK(contains(back, "null_slice_f32(in_x, t_y, 2, k0_y_shape, k1_y_x_strides, 3);"));
+    // a crop of [2, 3, 4] whose inner dims stay whole after the first: they merge into one
+    std::string crop = emit_slice({2, 3, 4}, {1}, {3}, {1}, {1});
+    CHECK(contains(crop, "static const int64_t k0_y_shape[2] = {2, 8};"));
+    CHECK(contains(crop, "null_slice_f32(in_x, t_y, 2, k0_y_shape, k1_y_x_strides, 4);"));
+    // nothing selected: an empty output, x not read
+    std::string none = emit_slice({4, 3}, {2}, {2}, {0}, {1});
+    CHECK(contains(none, "/* y is empty */"));
+    CHECK(!contains(none, "null_slice_f32("));
+}
+
+TEST(emit_split) {
+    // [6, 2] split [1, 5] along axis 0: two pointers; along axis 1 into equal halves: two copies
+    Graph g("split");
+    g.inputs = {"x"};
+    g.outputs = {"a", "b", "c"};
+    g.add_value_info(Tensor("x", {6, 2}, DType::FLOAT32));
+    Tensor sizes("sizes", {2}, DType::INT64);
+    sizes.set_int64_data({1, 5});
+    sizes.shape = {2};
+    g.add_initializer(sizes);
+    g.add_node(Node("rows", OpType::Split, {"x", "sizes"}, {"a", "b"}));
+    Node cols("cols", OpType::Split, {"x"}, {"c", "unused"});
+    cols.add_attr("axis", int64_t{1});
+    g.add_node(cols);
+    infer_shapes(g);
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    std::string c = emit_c(g, opt);
+    CHECK(contains(c, "/* a is in_x, no data moves */"));
+    CHECK(contains(c, "/* b is (in_x + 2), no data moves */"));
+    CHECK(contains(c, "null_slice_f32(in_x, t_c, 1, k0_c_shape, k1_c_x_strides, 0);"));
+    CHECK(contains(c, "static const int64_t k1_c_x_strides[1] = {2};"));
+    CHECK(contains(c, "/* unused: no output depends on it */"));
+}
+
 TEST(emit_transpose) {
     // [1, 8, 32] with perm [1, 0, 2]: only a size-1 dim moves, so no data does
     Node swap("t", OpType::Transpose, {"x"}, {"y"});
