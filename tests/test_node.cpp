@@ -23,6 +23,21 @@ TEST(attribute_tensor_value) {
     CHECK_NEAR(a.as_tensor().floats()[1], 2.0f, 1e-6f);
 }
 
+TEST(node_add_attr_overwrites) {
+    // a second value for the same key replaces the first, of any type
+    Node n("n", OpType::MaxPool, {"x"}, {"y"});
+    n.add_attr("ceil_mode", int64_t{0});
+    n.add_attr("ceil_mode", int64_t{1});
+    CHECK_EQ(n.attr_int("ceil_mode"), 1);
+    n.add_attr("pads", std::vector<int64_t>{1, 1, 1, 1});
+    n.add_attr("pads", std::vector<int64_t>{0, 0, 0, 0});
+    CHECK_EQ(n.attr_ints("pads"), (std::vector<int64_t>{0, 0, 0, 0}));
+    n.add_attr("auto_pad", std::string("NOTSET"));
+    n.add_attr("auto_pad", int64_t{7});
+    CHECK(n.get_attr("auto_pad").has_int());
+    CHECK_EQ(n.attrs.size(), size_t{3});
+}
+
 TEST(attribute_has_type) {
     Attribute a("axis", int64_t{1});
     CHECK(a.has_int());

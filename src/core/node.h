@@ -206,8 +206,11 @@ struct Node {
         : name(std::move(n)), op(o),
           inputs(std::move(ins)), outputs(std::move(outs)) {}
 
+    // sets an attribute, replacing any earlier value for the same key (the
+    // frontend refuses a model that repeats one, so this only matters to
+    // passes and tests that change a node)
     void add_attr(const std::string& key, AttrValue val) {
-        attrs.emplace(key, Attribute{key, std::move(val)});
+        attrs.insert_or_assign(key, Attribute{key, std::move(val)});
     }
 
     bool has_attr(const std::string& key) const {
