@@ -120,7 +120,10 @@ public:
         if (!t || t->dtype != DType::INT64) return std::nullopt;
         int64_t n = t->num_elements();
         if (n <= 0) return Value{};
-        return ints(std::vector<int64_t>(t->int64_ptr(), t->int64_ptr() + n));
+        std::vector<int64_t> v = t->int64s();
+        if (static_cast<int64_t>(v.size()) < n) return std::nullopt;     // not all of it is there
+        v.resize(static_cast<size_t>(n));
+        return ints(v);
     }
 
     // the value of an int64 input that must be fully known at compile time
@@ -1309,7 +1312,7 @@ void infer_shapes(Graph& g) {
 std::optional<std::vector<int64_t>> computed_value(const Graph& g, const std::string& name) {
     const Tensor* t = g.get_tensor_info(name);
     if (!t || t->dtype != DType::INT64 || t->data.empty() || g.is_initializer(name)) return std::nullopt;
-    return std::vector<int64_t>(t->int64_ptr(), t->int64_ptr() + t->data.size() / sizeof(int64_t));
+    return t->int64s();
 }
 
 } // namespace null

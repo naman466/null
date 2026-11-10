@@ -130,15 +130,22 @@ struct Tensor {
         if (shape.empty()) shape = {static_cast<int64_t>(values.size())};
     }
 
-    // access constant data as typed view
-    const float* float_ptr() const {
-        if (dtype != DType::FLOAT32 || data.empty()) return nullptr;
-        return reinterpret_cast<const float*>(data.data());
+    // the constant data as values, copied out of the bytes (empty for another
+    // dtype or no data). data is a byte buffer: reading it through a float*
+    // or int64_t* would break C++'s aliasing rules, so it is copied instead.
+    // a trailing partial element is ignored
+    std::vector<float> floats() const {
+        if (dtype != DType::FLOAT32) return {};
+        std::vector<float> v(data.size() / sizeof(float));
+        if (!v.empty()) std::memcpy(v.data(), data.data(), v.size() * sizeof(float));
+        return v;
     }
 
-    const int64_t* int64_ptr() const {
-        if (dtype != DType::INT64 || data.empty()) return nullptr;
-        return reinterpret_cast<const int64_t*>(data.data());
+    std::vector<int64_t> int64s() const {
+        if (dtype != DType::INT64) return {};
+        std::vector<int64_t> v(data.size() / sizeof(int64_t));
+        if (!v.empty()) std::memcpy(v.data(), data.data(), v.size() * sizeof(int64_t));
+        return v;
     }
 
     std::string shape_str() const {

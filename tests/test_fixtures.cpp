@@ -258,7 +258,7 @@ TEST(fixture_cnn_details) {
 
     // batch norm variance was generated strictly positive
     const Tensor& var = m.graph.initializers.at("bn.var");
-    for (int64_t i = 0; i < var.num_elements(); ++i) CHECK(var.float_ptr()[i] > 0.0f);
+    for (int64_t i = 0; i < var.num_elements(); ++i) CHECK(var.floats()[i] > 0.0f);
 }
 
 TEST(fixture_mlp_dynamic_batch) {
@@ -271,8 +271,8 @@ TEST(fixture_optionals_constant) {
     Model m = load_model(fixture_path("optionals.onnx"));
     const Tensor& two = m.graph.nodes[0].get_attr("value").as_tensor();
     CHECK(two.shape.empty());
-    CHECK_EQ(two.float_ptr()[0], 2.0f);
-    CHECK_EQ(m.graph.initializers.at("shape").int64_ptr()[0], 3);
+    CHECK_EQ(two.floats()[0], 2.0f);
+    CHECK_EQ(m.graph.initializers.at("shape").int64s()[0], 3);
 }
 
 // TESTS - SHAPE INFERENCE ON FIXTURES

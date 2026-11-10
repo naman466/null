@@ -225,7 +225,10 @@ private:
         std::string id = ident("w_", name);
         decls_ << "/* " << comment_text(name) << ": " << type_str(t) << " */\n"
                << "static const float " << id << "[" << (count ? count : 1) << "] = {";
-        const float* p = t.float_ptr();
+        const std::vector<float> p = t.floats();
+        if (static_cast<int64_t>(p.size()) < count)
+            fail(where(n) + ": input '" + name + "' has " + std::to_string(p.size()) + " values for " +
+                 std::to_string(count) + " elements");
         for (int64_t i = 0; i < count; ++i)
             decls_ << (i % 6 ? " " : "\n    ") << c_float_literal(p[i]) << ",";
         if (!count) decls_ << "0";
@@ -649,7 +652,10 @@ private:
             if (t->dtype != DType::INT64) return std::nullopt;
             const int64_t count = t->num_elements();
             if (count <= 0) return std::vector<int64_t>{};
-            return std::vector<int64_t>(t->int64_ptr(), t->int64_ptr() + count);
+            std::vector<int64_t> v = t->int64s();
+            if (static_cast<int64_t>(v.size()) < count) return std::nullopt;
+            v.resize(static_cast<size_t>(count));
+            return v;
         }
         return computed_value(g_, name);
     }

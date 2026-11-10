@@ -215,7 +215,7 @@ static std::vector<float> floats(const Graph& g, const std::string& name) {
 
 static std::vector<int64_t> ints(const Graph& g, const std::string& name) {
     const Tensor& t = g.initializers.at(name);
-    return std::vector<int64_t>(t.int64_ptr(), t.int64_ptr() + t.num_elements());
+    return t.int64s();
 }
 
 // x[4] -> Add(x, c) -> y, c from a Constant node with the given attribute

@@ -189,7 +189,7 @@ TEST(wiretype_unknown_fields_still_skipped) {
     PbWriter w = tensor_proto({1}, 1);
     w.int_field(99, 1).float_field(98, 1.0f).double_field(97, 1.0).bytes_field(96, "x");
     w.packed_floats(4, {2.0f});
-    CHECK_EQ(parse_tensor(w.reader()).float_ptr()[0], 2.0f);
+    CHECK_EQ(parse_tensor(w.reader()).floats()[0], 2.0f);
 }
 
 // TESTS - BOOL

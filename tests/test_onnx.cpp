@@ -100,7 +100,7 @@ TEST(tensor_raw_float) {
     CHECK(t.is_constant);
     CHECK_EQ(t.data.size(), 24u);
     CHECK_EQ(values_of<float>(t), vals);
-    CHECK_NEAR(t.float_ptr()[5], 6.0f, 1e-6f);
+    CHECK_NEAR(t.floats()[5], 6.0f, 1e-6f);
 }
 
 TEST(tensor_raw_int64) {
@@ -111,7 +111,7 @@ TEST(tensor_raw_int64) {
     Tensor t = parse_tensor(w.reader());
     CHECK_EQ(t.dtype, DType::INT64);
     CHECK_EQ(values_of<int64_t>(t), vals);
-    CHECK_EQ(t.int64_ptr()[2], 1LL << 40);
+    CHECK_EQ(t.int64s()[2], 1LL << 40);
 }
 
 TEST(tensor_float_data_packed) {
@@ -200,7 +200,7 @@ TEST(tensor_scalar) {
     Tensor t = parse_tensor(w.reader());
     CHECK(t.shape.empty());
     CHECK_EQ(t.num_elements(), 1);
-    CHECK_NEAR(t.float_ptr()[0], 1e-5f, 1e-12f);
+    CHECK_NEAR(t.floats()[0], 1e-5f, 1e-12f);
 }
 
 TEST(tensor_empty) {
@@ -919,7 +919,7 @@ TEST(graph_linear) {
     CHECK_EQ(g.nodes[0].op, OpType::MatMul);
     CHECK_EQ(g.nodes[1].op, OpType::Add);
     CHECK_EQ(g.initializers.size(), 2u);
-    CHECK_NEAR(g.initializers.at("B").float_ptr()[1], -0.5f, 1e-6f);
+    CHECK_NEAR(g.initializers.at("B").floats()[1], -0.5f, 1e-6f);
 
     // inputs, outputs, intermediates and initializers all have metadata
     for (const char* name : {"x", "y", "mm", "W", "B"})

@@ -20,7 +20,7 @@ TEST(attribute_tensor_value) {
     Attribute a("value", t);
     CHECK(a.has_tensor());
     CHECK_EQ(a.as_tensor().num_elements(), 2);
-    CHECK_NEAR(a.as_tensor().float_ptr()[1], 2.0f, 1e-6f);
+    CHECK_NEAR(a.as_tensor().floats()[1], 2.0f, 1e-6f);
 }
 
 TEST(attribute_has_type) {
