@@ -453,20 +453,23 @@ ValueInfo parse_value_info(pb::Reader r) {
 
         // TensorShapeProto.Dimension, a fixed value, a symbolic name, or neither
         pb::Reader dim = shape->read_message(tag);
-        std::optional<int64_t> value;
+        // -1 until a dim_value arrives (a plain value and a flag rather than an
+        // optional, which gcc 13 wrongly warns may be read uninitialised)
+        int64_t value = -1;
+        bool has_value = false;
         std::string param;
         while (!dim.eof()) {
             pb::Tag dt = dim.read_tag();
             switch (dt.field) {
                 // a oneof, the last field on the wire wins
-                case kDimValue: value = dim.read_int64(dt); param.clear(); break;
-                case kDimParam: param = dim.read_string(dt); value.reset(); break;
+                case kDimValue: value = dim.read_int64(dt); has_value = true; param.clear(); break;
+                case kDimParam: param = dim.read_string(dt); value = -1; has_value = false; break;
                 default:        dim.skip(dt.wire); break;
             }
         }
-        if (value && *value < 0)
-            throw fail("negative dimension " + std::to_string(*value));
-        vi.shape.push_back(value ? *value : -1);
+        if (has_value && value < 0)
+            throw fail("negative dimension " + std::to_string(value));
+        vi.shape.push_back(value);
         vi.dim_params.push_back(param);
     }
 

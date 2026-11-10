@@ -1,0 +1,52 @@
+# build Null and run every ctest test: on Linux with gcc, normally and with the
+# undefined-behaviour sanitizer, and on Windows with MinGW g++. the end-to-end
+# tests compare against outputs recorded in the repository, so no Python is needed
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  linux:
+    name: linux gcc (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: release
+            flags: ""
+          - name: sanitize
+            flags: -DNULL_SANITIZE=ON
+    steps:
+      - uses: actions/checkout@v4
+      - name: configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release ${{ matrix.flags }}
+      - name: build
+        run: cmake --build build -j "$(nproc)"
+      - name: test
+        run: ctest --test-dir build -j "$(nproc)" --output-on-failure
+
+  windows:
+    name: windows mingw g++
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
+      - name: configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: build
+        run: cmake --build build
+      - name: test
+        run: ctest --test-dir build -j 4 --output-on-failure
