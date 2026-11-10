@@ -133,7 +133,7 @@ TEST(opt_rounds_until_nothing_changes) {
                      Node("d", OpType::Dropout, {"b"}, {"c"}), Node("i2", OpType::Identity, {"c"}, {"y"}),
                      Node("lost", OpType::Relu, {"b"}, {"z"})});
     std::vector<PassResult> r = optimize(g);
-    CHECK_EQ(r.size(), size_t{5});
+    CHECK_EQ(r.size(), size_t{6});
     CHECK_EQ(r[0].pass, std::string("fold-constants"));
     CHECK_EQ(r[0].changes, size_t{0});
     CHECK_EQ(r[1].pass, std::string("remove-identities"));
@@ -142,8 +142,10 @@ TEST(opt_rounds_until_nothing_changes) {
     CHECK_EQ(r[2].changes, size_t{0});
     CHECK_EQ(r[3].pass, std::string("fuse-relu"));
     CHECK_EQ(r[3].changes, size_t{0});
-    CHECK_EQ(r[4].pass, std::string("dead-code"));
-    CHECK_EQ(r[4].changes, size_t{1});
+    CHECK_EQ(r[4].pass, std::string("transpose-gemm-weights"));
+    CHECK_EQ(r[4].changes, size_t{0});
+    CHECK_EQ(r[5].pass, std::string("dead-code"));
+    CHECK_EQ(r[5].changes, size_t{1});
     CHECK_EQ(g.live_node_count(), size_t{1});
     CHECK_EQ(node(g, "r").outputs, (std::vector<std::string>{"y"}));
     CHECK(g.validate().empty());
@@ -463,6 +465,43 @@ TEST(opt_fuse_relu_only_when_alone) {
     mm.add_node(Node("relu", OpType::Relu, {"h"}, {"y"}));
     infer_shapes(mm);
     CHECK_EQ(fuse_relu(mm), size_t{0});
+}
+
+// TESTS - TRANSPOSING GEMM WEIGHTS
+
+TEST(opt_transpose_gemm_weights) {
+    // w [3, 4] = 0, 1, ..., 11 read with transB becomes w' [4, 3] read without
+    Graph g = gemm_relu();
+    std::vector<float> v(12);
+    for (size_t i = 0; i < v.size(); ++i) v[i] = static_cast<float>(i);
+    g.initializers.at("w").set_float_data(v);
+    CHECK_EQ(transpose_gemm_weights(g), size_t{1});
+    const Node gemm = node(g, "gemm");   // a copy: gcc warns, falsely, of a dangling reference
+    CHECK_EQ(gemm.attr_int("transB", 1), int64_t{0});
+    CHECK_EQ(gemm.inputs[1], std::string("w.transposed"));
+    const Tensor& t = g.initializers.at("w.transposed");
+    CHECK_EQ(t.shape, (std::vector<int64_t>{4, 3}));
+    CHECK_EQ(t.floats(), (std::vector<float>{0, 4, 8, 1, 5, 9, 2, 6, 10, 3, 7, 11}));
+    CHECK_EQ(transpose_gemm_weights(g), size_t{0});
+    // the old weights are left for dead-code to drop
+    CHECK_EQ(eliminate_dead_nodes(g), size_t{1});
+    CHECK(!g.is_initializer("w"));
+    CHECK(g.validate().empty());
+}
+
+TEST(opt_transpose_gemm_weights_only_when_safe) {
+    // weights the caller can replace (a graph input), or read elsewhere too, stay
+    Graph input = gemm_relu();
+    input.inputs.push_back("w");
+    input.add_value_info(Tensor("w", {3, 4}, DType::FLOAT32));
+    CHECK_EQ(transpose_gemm_weights(input), size_t{0});
+    Graph shared = gemm_relu({Node("other", OpType::Relu, {"w"}, {"z"})}, {"y", "z"});
+    CHECK_EQ(transpose_gemm_weights(shared), size_t{0});
+    // no transB, nothing to do
+    Graph plain = gemm_relu();
+    for (Node& n : plain.nodes)
+        if (n.name == "gemm") n.add_attr("transB", int64_t{0});
+    CHECK_EQ(transpose_gemm_weights(plain), size_t{0});
 }
 
 TEST(opt_fuse_relu_into_conv_through_an_identity) {

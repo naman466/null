@@ -166,7 +166,7 @@ add_cli_test(unknown_option 1 "unknown option '--bogus'" --bogus)
 add_cli_test(two_models     1 "only one model can be given" a.onnx b.onnx)
 add_cli_test(help           0 "Usage: nullc" --help)
 add_cli_test(version        0 "^nullc [0-9]+\\.[0-9]+\\.[0-9]+" --version)
-add_cli_test(optimised      0 "optimised: remove-identities 3, fuse-relu 1, dead-code 4" "${FIXTURES}/optimizable.onnx")
+add_cli_test(optimised      0 "optimised: remove-identities 3, fuse-relu 1, transpose-gemm-weights 2, dead-code 6" "${FIXTURES}/optimizable.onnx")
 add_cli_test(no_opt         0 "graph .optimizable.: 8 nodes, 6 initializers" "${FIXTURES}/optimizable.onnx" --no-opt)
 
 # generated C: nullc -o on every model it can compile, then the C compiler

@@ -48,6 +48,7 @@ const std::vector<Pass>& passes() {
         {"remove-identities", remove_identities},
         {"fold-batchnorm", fold_batchnorm},
         {"fuse-relu", fuse_relu},
+        {"transpose-gemm-weights", transpose_gemm_weights},
         {"dead-code", eliminate_dead_nodes},
     };
     return list;
@@ -328,6 +329,35 @@ size_t fuse_relu(Graph& g) {
             if (o == mid) o = relu.outputs.at(0);
         relu.is_dead = true;
         g.value_info.erase(mid);
+        ++changes;
+    }
+    return changes;
+}
+
+size_t transpose_gemm_weights(Graph& g) {
+    size_t changes = 0;
+    for (Node& gemm : g.nodes) {
+        if (gemm.is_dead || gemm.op != OpType::Gemm || gemm.inputs.size() < 2) continue;
+        if (gemm.attr_int("transB", 0) == 0) continue;
+        const std::string b = gemm.inputs[1];
+        const Tensor* w = fixed_floats(g, b);
+        if (!w || w->shape.size() != 2 || is_graph_output(g, b)) continue;
+        // read by this node alone, and only as B
+        size_t reads = 0;
+        for (const Node& n : g.nodes)
+            if (!n.is_dead) reads += static_cast<size_t>(std::count(n.inputs.begin(), n.inputs.end(), b));
+        if (reads != 1) continue;
+        const int64_t rows = w->shape[0], cols = w->shape[1];   // [N, K]
+        const std::vector<float> v = floats_of(*w);
+        if (static_cast<int64_t>(v.size()) != rows * cols) continue;
+        std::vector<float> t(v.size());
+        for (int64_t i = 0; i < rows; ++i)
+            for (int64_t j = 0; j < cols; ++j)
+                t[static_cast<size_t>(j * rows + i)] = v[static_cast<size_t>(i * cols + j)];
+        const std::string name = unused_name(g, b + ".transposed");
+        g.add_initializer(make_constant(name, {cols, rows}, DType::FLOAT32, t.data(), t.size() * 4));
+        gemm.inputs[1] = name;
+        gemm.add_attr("transB", int64_t{0});
         ++changes;
     }
     return changes;

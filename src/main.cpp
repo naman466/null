@@ -42,6 +42,9 @@ static void print_usage(std::ostream& out) {
            "                             as it was loaded\n"
            "  --no-plan                  give every intermediate buffer its own memory\n"
            "                             instead of sharing one planned arena\n"
+           "  --reference-kernels        call the plain gemm, matmul and conv loops\n"
+           "                             instead of the blocked ones (same results,\n"
+           "                             slower; for checking and benchmarking)\n"
            "  --version                  print the version and exit\n"
            "  -h, --help                 show this help\n";
 }
@@ -92,6 +95,7 @@ int main(int argc, char** argv) {
     bool dump = false;
     bool optimize = true;
     bool plan = true;
+    bool reference_kernels = false;
     std::optional<int64_t> batch;
     std::string output_path;
     std::vector<std::pair<std::string, std::vector<int64_t>>> input_shapes;
@@ -121,6 +125,8 @@ int main(int argc, char** argv) {
             optimize = false;
         } else if (arg == "--no-plan") {
             plan = false;
+        } else if (arg == "--reference-kernels") {
+            reference_kernels = true;
         } else if (auto v = value_of("-o")) {
             if (v->empty()) return usage_error("-o needs a file name");
             output_path = *v;
@@ -243,6 +249,7 @@ int main(int argc, char** argv) {
         try {
             null::EmitOptions options;
             options.plan_memory = plan;
+            options.reference_kernels = reference_kernels;
             source = null::emit_c(g, options);
         } catch (const null::EmitError& e) {
             std::cerr << "nullc: error: code generation: " << e.what() << "\n";

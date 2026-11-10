@@ -317,6 +317,7 @@ private:
         // shape arithmetic computed at compile time calls no kernel
         const bool computed = !n.outputs.empty() && computed_value(g_, n.outputs[0]).has_value();
         if (const char* part = runtime_part(n.op); part && !computed) parts_.insert(part);
+        if (n.op == OpType::Conv) parts_.insert("matmul");    // conv's blocked kernel is a matrix product
         switch (n.op) {
             case OpType::Relu:    emit_unary(n, "relu"); break;
             case OpType::Sigmoid: emit_unary(n, "sigmoid"); break;
@@ -430,6 +431,9 @@ private:
               << ", " << shape << ", " << st_a << ", " << st_b << ");\n";
     }
 
+    // "_ref" for the reference gemm, matmul and conv loops
+    const char* kernel_suffix() const { return opt_.reference_kernels ? "_ref" : ""; }
+
     void emit_gemm(const Node& n) {
         std::string a = read(n, 0), b = read(n, 1);
         const bool has_c = n.inputs.size() > 2 && !n.inputs[2].empty();
@@ -445,7 +449,7 @@ private:
             c_rs = s[0];
             c_cs = s[1];
         }
-        body_ << "    null_gemm_f32(" << a << ", " << b << ", " << c << ", " << y << ", " << m << ", " << nn
+        body_ << "    null_gemm" << kernel_suffix() << "_f32(" << a << ", " << b << ", " << c << ", " << y << ", " << m << ", " << nn
               << ", " << k << ", " << trans_a << ", " << trans_b << ", "
               << c_float_literal(n.attr_float("alpha", 1.0f)) << ", " << c_float_literal(n.attr_float("beta", 1.0f))
               << ", " << c_rs << ", " << c_cs << ", " << n.attr_int(kFusedRelu, 0) << ");\n";
@@ -466,7 +470,7 @@ private:
         std::string shape = int_array(n.name + "_batch", batch);
         std::string sta = int_array(n.name + "_a_strides", st_a);
         std::string stb = int_array(n.name + "_b_strides", st_b);
-        body_ << "    null_matmul_f32(" << a << ", " << b << ", " << y << ", " << m << ", " << nn << ", " << k
+        body_ << "    null_matmul" << kernel_suffix() << "_f32(" << a << ", " << b << ", " << y << ", " << m << ", " << nn << ", " << k
               << ", " << batch.size() << ", " << shape << ", " << sta << ", " << stb << ");\n";
     }
 
@@ -484,7 +488,7 @@ private:
                << g.stride_h << ", " << g.stride_w << ", " << g.dil_h << ", " << g.dil_w << ", "
                << g.pad_top << ", " << g.pad_left << ", " << g.out_h << ", " << g.out_w << ", "
                << n.attr_int(kFusedRelu, 0) << "};\n";
-        body_ << "    null_conv2d_f32(" << x << ", " << w << ", " << b << ", " << y << ", &" << params << ");\n";
+        body_ << "    null_conv2d" << kernel_suffix() << "_f32(" << x << ", " << w << ", " << b << ", " << y << ", &" << params << ");\n";
     }
 
     void emit_maxpool(const Node& n) {

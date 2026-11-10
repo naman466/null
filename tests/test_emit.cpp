@@ -241,6 +241,33 @@ TEST(emit_conv) {
     nb.add_node(Node("conv", OpType::Conv, {"x", "w"}, {"y"}));
     infer_shapes(nb);
     CHECK(contains(emit_c(nb, opt), "null_conv2d_f32(in_x, w_w, NULL, t_y, &"));
+
+    // the blocked conv is a matrix product, so a conv embeds the matmul part first
+    std::string embedded = emit_c(nb);
+    size_t matmul = embedded.find("/* ---- runtime/null/matmul.h, embedded ---- */");
+    size_t conv_part = embedded.find("/* ---- runtime/null/conv.h, embedded ---- */");
+    CHECK(matmul != std::string::npos && conv_part != std::string::npos && matmul < conv_part);
+}
+
+TEST(emit_reference_kernels) {
+    // --reference-kernels: the same calls, to the plain loops
+    EmitOptions opt;
+    opt.embed_runtime = false;
+    opt.reference_kernels = true;
+    std::string mlp = emit_c(small_mlp(), opt);
+    CHECK(contains(mlp, "null_gemm_ref_f32(in_x, "));
+    CHECK(!contains(mlp, "null_gemm_f32("));
+    Graph g("conv");
+    g.inputs = {"x"};
+    g.outputs = {"y"};
+    g.add_value_info(Tensor("x", {1, 1, 3, 3}, DType::FLOAT32));
+    add_weights(g, "w", {1, 1, 2, 2}, 1.0f);
+    g.add_node(Node("conv", OpType::Conv, {"x", "w"}, {"h"}));
+    g.add_node(Node("mm", OpType::MatMul, {"h", "h"}, {"y"}));
+    infer_shapes(g);
+    std::string c = emit_c(g, opt);
+    CHECK(contains(c, "null_conv2d_ref_f32(in_x, w_w, NULL, t_h, &"));
+    CHECK(contains(c, "null_matmul_ref_f32(t_h, t_h, t_y, 2, 2, 2, 2,"));
 }
 
 TEST(emit_maxpool) {

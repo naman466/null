@@ -188,6 +188,50 @@ static void test_gemm_fused_relu(void) {
     CHECK(same_bits(f1[0], -0.0f));
 }
 
+/* ---- blocked against reference ---- */
+
+/* the blocked gemm and the reference loops on random shapes, every flag,
+   with sizes on both sides of the tile edges (4 rows, 16 columns, 128 k)
+   and NaN, infinities and -0.0 among the values: the same bits, always
+   (but for which NaN a NaN is, see all_same_values) */
+static void test_gemm_blocked_matches_reference(void) {
+    static float a[40 * 300], b[300 * 40], c[40 * 40], y[40 * 40], want[40 * 40];
+    int t, mismatches = 0;
+    for (t = 0; t < 300; ++t) {
+        const int64_t M = rand_int(0, 40), N = rand_int(0, 40), K = t % 10 == 0 ? rand_int(129, 300) : rand_int(0, 40);
+        const int ta = (int)rand_int(0, 1), tb = (int)rand_int(0, 1), relu = (int)rand_int(0, 1);
+        const int special = t % 3 == 0;
+        const int cs = (int)rand_int(0, 3);   /* none, [N], [M, 1], [M, N] */
+        const int64_t c_rs = cs == 2 ? 1 : cs == 3 ? N : 0, c_cs = cs == 1 || cs == 3 ? 1 : 0;
+        const float alpha = t % 4 == 0 ? 0.5f : 1.0f, beta = t % 5 == 0 ? -2.0f : 1.0f;
+        int64_t i;
+        for (i = 0; i < M * K; ++i) a[i] = rand_value(special);
+        for (i = 0; i < K * N; ++i) b[i] = rand_value(special);
+        for (i = 0; i < M * N; ++i) c[i] = rand_value(special);
+        null_gemm_f32(a, b, cs ? c : NULL, y, M, N, K, ta, tb, alpha, beta, c_rs, c_cs, relu);
+        null_gemm_ref_f32(a, b, cs ? c : NULL, want, M, N, K, ta, tb, alpha, beta, c_rs, c_cs, relu);
+        if (!all_same_values(y, want, M * N)) ++mismatches;
+    }
+    CHECK(mismatches == 0);
+}
+
+static void test_matmul_blocked_matches_reference(void) {
+    static float a[3 * 20 * 30], b[3 * 30 * 20], y[3 * 20 * 20], want[3 * 20 * 20];
+    int t, mismatches = 0;
+    for (t = 0; t < 50; ++t) {
+        const int64_t M = rand_int(1, 20), N = rand_int(1, 20), K = rand_int(1, 30);
+        int64_t bshape[1] = {3}, a_bs[1], b_bs[1], i;
+        a_bs[0] = M * K;
+        b_bs[0] = t % 2 ? 0 : K * N;      /* per-batch b, or one b shared */
+        for (i = 0; i < 3 * M * K; ++i) a[i] = rand_value(1);
+        for (i = 0; i < 3 * K * N; ++i) b[i] = rand_value(1);
+        null_matmul_f32(a, b, y, M, N, K, 1, bshape, a_bs, b_bs);
+        null_matmul_ref_f32(a, b, want, M, N, K, 1, bshape, a_bs, b_bs);
+        if (!all_same_values(y, want, 3 * M * N)) ++mismatches;
+    }
+    CHECK(mismatches == 0);
+}
+
 static void run_matmul_tests(void) {
     test_gemm_fused_relu();
     test_gemm_plain();
@@ -200,4 +244,6 @@ static void run_matmul_tests(void) {
     test_matmul_batched();
     test_matmul_batch_broadcast();
     test_matmul_summation_order();
+    test_gemm_blocked_matches_reference();
+    test_matmul_blocked_matches_reference();
 }

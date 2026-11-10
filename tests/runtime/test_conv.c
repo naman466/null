@@ -147,6 +147,41 @@ static void test_conv_fused_relu(void) {
     for (i = 0; i < 18; ++i) CHECK(fused[i] >= 0.0f);
 }
 
+/* the blocked conv and the reference loops on random geometry: groups
+   (depthwise included), strides, dilations, padding at either end, 1x1
+   convolutions read in place, filters longer than a panel. specials go in
+   the input always and in the weights some of the time, since an infinite
+   weight sends a padded convolution to the reference loops */
+static void test_conv_blocked_matches_reference(void) {
+    static float x[2 * 12 * 10 * 10], w[24 * 12 * 4 * 4], b[24], y[2 * 24 * 14 * 14], want[2 * 24 * 14 * 14];
+    int t, mismatches = 0;
+    for (t = 0; t < 400; ++t) {
+        const int64_t group = t % 5 == 0 ? rand_int(2, 4) : 1;
+        const int64_t cg = rand_int(1, 3), mg = t % 7 == 0 ? 1 : rand_int(1, 6);
+        const int64_t kh = rand_int(1, 4), kw = t % 4 == 0 ? kh : rand_int(1, 4);
+        const int64_t stride = rand_int(1, 2), dil = t % 6 == 0 ? 2 : 1;
+        const int64_t pt = rand_int(0, kh - 1), pl = rand_int(0, kw - 1), pb = rand_int(0, kh - 1), pr = rand_int(0, kw - 1);
+        const int64_t h = rand_int(kh * dil, 10), wd = rand_int(kw * dil, 10), n = rand_int(1, 2);
+        null_conv2d_params p = conv_params(n, cg * group, h, wd, mg * group, kh, kw, group, stride, dil,
+                                           t % 3 == 0 ? 0 : pt, t % 3 == 0 ? 0 : pl,
+                                           t % 3 == 0 ? 0 : pb, t % 3 == 0 ? 0 : pr);
+        const int has_b = (int)rand_int(0, 1);
+        int64_t i;
+        if (t % 9 == 0) {
+            /* a bigger single group, so a filter (cg * kh * kw) passes a panel's 128 rows */
+            p = conv_params(1, 12, 10, 10, 24, 4, 4, 1, 1, 1, 1, 2, 2, 1);
+        }
+        p.relu = (int)rand_int(0, 1);
+        for (i = 0; i < p.n * p.c * p.h * p.w; ++i) x[i] = rand_value(1);
+        for (i = 0; i < p.m * (p.c / p.group) * p.kh * p.kw; ++i) w[i] = rand_value(t % 4 == 1);
+        for (i = 0; i < p.m; ++i) b[i] = rand_value(1);
+        null_conv2d_f32(x, w, has_b ? b : NULL, y, &p);
+        null_conv2d_ref_f32(x, w, has_b ? b : NULL, want, &p);
+        if (!all_same_values(y, want, p.n * p.m * p.out_h * p.out_w)) ++mismatches;
+    }
+    CHECK(mismatches == 0);
+}
+
 static void run_conv_tests(void) {
     test_conv_fused_relu();
     test_conv_by_hand();
@@ -154,4 +189,5 @@ static void run_conv_tests(void) {
     test_conv_padding_is_skipped();
     test_conv_against_reference();
     test_conv_summation_order();
+    test_conv_blocked_matches_reference();
 }

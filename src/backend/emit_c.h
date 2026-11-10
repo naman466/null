@@ -29,6 +29,10 @@ struct EmitOptions {
     // let intermediate buffers that are never alive at the same time share
     // memory; off, every buffer gets its own
     bool plan_memory = true;
+    // call the plain one-output-at-a-time gemm, matmul and conv loops instead
+    // of the blocked ones; both give the same bits, so this is for checking
+    // and measuring the blocked ones
+    bool reference_kernels = false;
 };
 
 // the C source, or EmitError naming the first thing that can't be emitted

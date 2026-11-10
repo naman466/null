@@ -71,6 +71,13 @@ size_t fold_batchnorm(Graph& g);
 // kernels use the Relu kernel's own expression, so the bits are the same
 size_t fuse_relu(Graph& g);
 
+// a Gemm with transB whose B is a 2-D initializer the caller cannot replace,
+// read by nothing else, gets B transposed at compile time as a new
+// initializer and transB = 0. the blocked gemm kernel reads B fastest that
+// way (a batch-1 Linear layer about twice as fast); every product and sum is
+// the same, so the bits are too
+size_t transpose_gemm_weights(Graph& g);
+
 // nodes whose outputs reach no graph output are marked dead, and initializers
 // that nothing reads any more are dropped (unless they are graph inputs)
 size_t eliminate_dead_nodes(Graph& g);
