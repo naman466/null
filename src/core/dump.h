@@ -139,9 +139,10 @@ inline std::string dump_graph(const Graph& g) {
                 out << ": " << type_str(*t);
                 // a value shape inference computed, like a folded Reshape target
                 if (t->dtype == DType::INT64 && !t->data.empty() && !g.is_initializer(o)) {
-                    std::vector<int64_t> v(t->data.size() / sizeof(int64_t));
-                    std::memcpy(v.data(), t->data.data(), t->data.size());
-                    if (t->shape.empty()) {
+                    const std::vector<int64_t> v = t->int64s();
+                    if (v.empty()) {
+                        // fewer bytes than one value: nothing to show
+                    } else if (t->shape.empty()) {
                         out << " = " << v[0];          // a scalar
                     } else {
                         out << " = [";

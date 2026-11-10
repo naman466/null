@@ -38,6 +38,18 @@ TEST(tensor_set_float_data) {
     CHECK_NEAR(t.floats()[3], 4.0f, 1e-6f);
 }
 
+TEST(tensor_set_empty_data) {
+    // an empty vector's data() may be null, and memcpy from null is undefined
+    // even for 0 bytes (glibc's UBSan build traps on it; MinGW's does not)
+    Tensor f("f", {0}, DType::FLOAT32);
+    f.set_float_data({});
+    CHECK(f.data.empty() && f.is_constant);
+    CHECK_EQ(f.shape, (std::vector<int64_t>{0}));
+    Tensor i("i", {0}, DType::INT64);
+    i.set_int64_data({});
+    CHECK(i.data.empty() && i.int64s().empty());
+}
+
 TEST(tensor_values_copied_from_bytes) {
     // the bytes are copied out exactly, -0.0 and a NaN payload included, from
     // a buffer whose first value starts at an odd address

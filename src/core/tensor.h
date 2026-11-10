@@ -118,7 +118,7 @@ struct Tensor {
         dtype = DType::FLOAT32;
         is_constant = true;
         data.resize(values.size() * 4);
-        std::memcpy(data.data(), values.data(), data.size());
+        if (!values.empty()) std::memcpy(data.data(), values.data(), data.size());   // memcpy from an empty vector's null data() is undefined
         if (shape.empty()) shape = {static_cast<int64_t>(values.size())};
     }
 
@@ -126,7 +126,7 @@ struct Tensor {
         dtype = DType::INT64;
         is_constant = true;
         data.resize(values.size() * 8);
-        std::memcpy(data.data(), values.data(), data.size());
+        if (!values.empty()) std::memcpy(data.data(), values.data(), data.size());   // memcpy from an empty vector's null data() is undefined
         if (shape.empty()) shape = {static_cast<int64_t>(values.size())};
     }
 
