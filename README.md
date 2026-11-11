@@ -62,6 +62,12 @@ models beat ONNX Runtime, whose per-operator overhead dominates there; on convol
 FMA kernels are still 4 to 9 times faster than portable C. (The MLP's `-O3` time is a gcc 15 quirk: its interprocedural constant
 propagation specialises the tile for that layer badly; `-O2 -march=native` runs it in 0.005 ms.)
 
+### On a microcontroller
+
+The same LeNet runs on an emulated **Cortex-M4** (QEMU's `mps2-an386` board) with no operating system, no C library and no
+allocator: 283 KB of code and weights, 72 KB of RAM. Its outputs match ONNX Runtime's and are **bit for bit** those of the same
+generated C on x86-64. See [`demo/cortex-m`](demo/cortex-m/README.md); CI runs it on every push.
+
 ### Cross-checks
 
 `ctest` proves Null still does what its tests say. The scripts in [`tools/crosscheck`](tools/crosscheck/README.md) ask a harder
@@ -83,9 +89,9 @@ Along the way they found real bugs in Null, each fixed in its own commit, and de
 
 ### Tests
 
-109 `ctest` tests: 349 C++ test cases, 81 runtime kernel tests compiled as both C99 and C++, a protobuf fuzzer, command-line
+110 `ctest` tests (with an Arm cross compiler and QEMU installed): 349 C++ test cases, 81 runtime kernel tests compiled as both C99 and C++, a protobuf fuzzer, command-line
 tests, a compile of every generated model as strict C99 (`-Wall -Wextra -Wpedantic -Werror`), and 33 end-to-end runs against
-ONNX Runtime. CI runs them on Linux (gcc, and gcc with the undefined-behaviour sanitizer) and on Windows (MinGW g++).
+ONNX Runtime, plus the Cortex-M demo. CI runs them on Linux (gcc, and gcc with the undefined-behaviour sanitizer) and on Windows (MinGW g++).
 
 ---
 
@@ -133,6 +139,7 @@ Null/
 ├── tests/              # unit, fixture, CLI, generated-code and end-to-end tests
 ├── tools/crosscheck/   # random cross-checks against the specification and ONNX Runtime
 ├── tools/bench/        # benchmark against ONNX Runtime
+├── demo/cortex-m/      # LeNet on a bare Cortex-M4 under QEMU
 └── .github/workflows/  # CI
 ```
 

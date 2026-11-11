@@ -235,3 +235,24 @@ foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable f
             ${tolerance}
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_e2e.cmake")
 endforeach()
+
+# LeNet on a Cortex-M4 under qemu (demo/cortex-m), when an arm cross compiler
+# and qemu are installed: checked against onnx runtime and, bit for bit, against
+# the same model built for the host
+find_program(NULL_ARM_GCC arm-none-eabi-gcc)
+find_program(NULL_QEMU_ARM qemu-system-arm)
+if(NULL_ARM_GCC AND NULL_QEMU_ARM)
+    add_test(NAME demo_cortex_m_lenet
+        COMMAND ${CMAKE_COMMAND}
+            "-DNULLC=$<TARGET_FILE:nullc>"
+            "-DMODEL=${FIXTURES}/pytorch/lenet__legacy.onnx"
+            "-DVECTORS=${FIXTURES}/e2e/pytorch__lenet__legacy.vectors"
+            "-DARM_GCC=${NULL_ARM_GCC}"
+            "-DQEMU=${NULL_QEMU_ARM}"
+            "-DCC=${CMAKE_C_COMPILER}"
+            "-DDRIVER=${CMAKE_CURRENT_SOURCE_DIR}/tests/e2e/run_vectors.c"
+            "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/demo_cortex_m"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/demo/cortex-m/run_demo.cmake")
+else()
+    message(STATUS "no arm-none-eabi-gcc and qemu-system-arm: the Cortex-M demo test is skipped")
+endif()

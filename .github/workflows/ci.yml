@@ -1,6 +1,7 @@
 # build Null and run every ctest test: on Linux with gcc, normally and with the
 # undefined-behaviour sanitizer, and on Windows with MinGW g++. the end-to-end
-# tests compare against outputs recorded in the repository, so no Python is needed
+# tests compare against outputs recorded in the repository, so no Python is
+# needed. the Linux release build also runs the Cortex-M demo under qemu
 name: ci
 
 on:
@@ -24,8 +25,17 @@ jobs:
             flags: -DNULL_SANITIZE=ON
     steps:
       - uses: actions/checkout@v4
+      # the release build also runs LeNet on a Cortex-M4 under qemu (demo/cortex-m)
+      - name: install the arm cross compiler and qemu
+        if: matrix.name == 'release'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi libnewlib-arm-none-eabi qemu-system-arm
       - name: configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release ${{ matrix.flags }}
+      - name: check the cortex-m demo is a test
+        if: matrix.name == 'release'
+        run: ctest --test-dir build -N | grep demo_cortex_m_lenet
       - name: build
         run: cmake --build build -j "$(nproc)"
       - name: test
