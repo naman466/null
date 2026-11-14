@@ -138,7 +138,7 @@ Null/
 ├── runtime/            # the C99 kernels generated code embeds, one header per family
 ├── tests/              # unit, fixture, CLI, generated-code and end-to-end tests
 ├── tools/crosscheck/   # random cross-checks against the specification and ONNX Runtime
-├── tools/bench/        # benchmark against ONNX Runtime
+├── tools/bench/        # benchmark against ONNX Runtime, per-layer profile
 ├── demo/cortex-m/      # LeNet on a bare Cortex-M4 under QEMU
 └── .github/workflows/  # CI
 ```

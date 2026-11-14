@@ -20,6 +20,34 @@ reference builds give **bit-identical** outputs, and fails if they do not.
 The generated C is built with `-O2 -ffp-contract=off` by default. Leaving out `-ffp-contract=off` lets gcc fuse multiplies and adds
 on machines with FMA, which is faster but no longer gives the reference kernels' bits.
 
+## Where the time goes
+
+`profile_layers.py` shows a single model's time step by step. It compiles the model, puts a timer call before every step of the
+generated `model_run`, builds it with [`profile_model.c`](profile_model.c), and prints each step's mean time per run, its share of
+the total and, for convolutions and matrix products, the GFLOP/s reached, then a summary by operator. Steps that move no data,
+like a Reshape that only renames its input, are left out.
+
+```bash
+.venv/Scripts/python -I tools/bench/profile_layers.py tests/fixtures/pytorch/resnet18_small__legacy.onnx
+.venv/Scripts/python -I tools/bench/profile_layers.py --torchvision --top 6       # the six slowest steps of each full-size net
+.venv/Scripts/python -I tools/bench/profile_layers.py model.onnx --reference-kernels --cflags "-O2 -march=native -ffp-contract=off"
+```
+
+```text
+ResNet-18 (224x224): 881.841 ms per run, mean of 10 (cflags -O2 -ffp-contract=off)
+
+step                         op                 work                                ms  share  GFLOP/s
+/layer4/layer4.1/conv2/Conv  Conv               512->512 3x3 7x7                  68.3   7.7%      3.4
+/layer4/layer4.1/conv1/Conv  Conv               512->512 3x3 7x7                  67.1   7.6%      3.4
+...
+by operator          steps        ms  share  GFLOP/s
+Conv                    20     874.9  99.2%      4.1
+MaxPool                  1     5.482   0.6%
+```
+
+On both full-size networks, convolutions take 97 to 99% of the time, and they run at 3 to 5 GFLOP/s whatever their shape. When speed
+doesn't change with shape, the inner kernel is the limit, not memory or the packing.
+
 ## Results
 
 Measured on 2026-11-10 on a laptop x86-64 CPU (Windows, gcc 15.2, onnxruntime 1.31.1).
