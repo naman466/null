@@ -21,8 +21,8 @@
  * there are two kernels for each operation. the reference ones (_ref) are
  * the plain loops, one output at a time. the blocked ones, which generated
  * code calls unless nullc is given --reference-kernels, work on a tile of
- * outputs at once so that the compiler can keep the tile in registers and
- * vectorise across it, and on panels of b small enough to stay in cache.
+ * outputs at once, on panels of b small enough to stay in cache, and, when
+ * the compiler targets avx, with the tile's sums held in vector registers.
  * tiling reorders which outputs are computed when, never the operations
  * inside one output: every output is still the same sum in the same order,
  * so both kernels give the same bits. the tests compare them on random
@@ -102,12 +102,109 @@ static inline void null_gemm_ref_f32(const float* a, const float* b, const float
    out[kk * NULL_TILE_N + jj], with 0 for jj >= nr */
 typedef void (*null_pack_fn)(const void* ctx, int64_t k0, int64_t kc, int64_t j0, int64_t nr, float* out);
 
+/* with avx, whole tiles keep their sums in registers: eight vectors of 8
+   floats, gcc's vector types (clang has them too). the plain loops below
+   keep acc[][] in memory, because gcc does not put an array indexed by loop
+   variables in registers, and each step of k then loads and stores every
+   sum. each lane of q = b * v; c = c + q is the plain loop's multiply and
+   add, rounded the same way, in the same order of k, so the bits are the
+   same. other compilers and targets use the plain loops.
+   not with gcc for windows without optimisation: 64-bit windows only aligns
+   the stack to 16 bytes, gcc there never realigns it for 32-byte vectors
+   (gcc bug 54412), and at -O0 it keeps every vector variable on the stack
+   with aligned moves, which fault. optimised, these kernels keep all their
+   vectors in registers */
+#if defined(__GNUC__) && defined(__AVX__) && (defined(__OPTIMIZE__) || !defined(_WIN32) || defined(__clang__))
+#define NULL_TILE_VECTOR 1
+typedef float null_v8f __attribute__((vector_size(32)));
+
+static inline null_v8f null_ld8_f32(const float* p) {
+    null_v8f v;
+    __builtin_memcpy(&v, p, sizeof v);
+    return v;
+}
+
+static inline void null_st8_f32(float* p, null_v8f v) { __builtin_memcpy(p, &v, sizeof v); }
+
+static inline null_v8f null_splat8_f32(float x) {
+    null_v8f v = {x, x, x, x, x, x, x, x};
+    return v;
+}
+
+/* a whole tile, nr = NULL_TILE_N */
+static inline void null_tile_m_v8_f32(const float* const* ar, int64_t a_k, const float* p, int64_t ldp,
+                                      int64_t kc, float* y, int64_t ldy, int first) {
+    const float *r0 = ar[0], *r1 = ar[1], *r2 = ar[2], *r3 = ar[3];
+    float* y0 = y;
+    float* y1 = y + ldy;
+    float* y2 = y + 2 * ldy;
+    float* y3 = y + 3 * ldy;
+    null_v8f c00, c01, c10, c11, c20, c21, c30, c31;
+    int64_t kk;
+    if (first) {
+        c00 = c01 = c10 = c11 = c20 = c21 = c30 = c31 = null_splat8_f32(0.0f);
+    } else {
+        c00 = null_ld8_f32(y0); c01 = null_ld8_f32(y0 + 8);
+        c10 = null_ld8_f32(y1); c11 = null_ld8_f32(y1 + 8);
+        c20 = null_ld8_f32(y2); c21 = null_ld8_f32(y2 + 8);
+        c30 = null_ld8_f32(y3); c31 = null_ld8_f32(y3 + 8);
+    }
+    for (kk = 0; kk < kc; ++kk) {
+        const null_v8f b0 = null_ld8_f32(p + kk * ldp), b1 = null_ld8_f32(p + kk * ldp + 8);
+        null_v8f v, q;
+        v = null_splat8_f32(r0[kk * a_k]);
+        q = b0 * v; c00 = c00 + q;
+        q = b1 * v; c01 = c01 + q;
+        v = null_splat8_f32(r1[kk * a_k]);
+        q = b0 * v; c10 = c10 + q;
+        q = b1 * v; c11 = c11 + q;
+        v = null_splat8_f32(r2[kk * a_k]);
+        q = b0 * v; c20 = c20 + q;
+        q = b1 * v; c21 = c21 + q;
+        v = null_splat8_f32(r3[kk * a_k]);
+        q = b0 * v; c30 = c30 + q;
+        q = b1 * v; c31 = c31 + q;
+    }
+    null_st8_f32(y0, c00); null_st8_f32(y0 + 8, c01);
+    null_st8_f32(y1, c10); null_st8_f32(y1 + 8, c11);
+    null_st8_f32(y2, c20); null_st8_f32(y2 + 8, c21);
+    null_st8_f32(y3, c30); null_st8_f32(y3 + 8, c31);
+}
+
+/* one row, a whole panel */
+static inline void null_tile_1_v8_f32(const float* ar, int64_t a_k, const float* p, int64_t ldp,
+                                      int64_t kc, float* y, int first) {
+    null_v8f c0, c1;
+    int64_t kk;
+    if (first) {
+        c0 = c1 = null_splat8_f32(0.0f);
+    } else {
+        c0 = null_ld8_f32(y);
+        c1 = null_ld8_f32(y + 8);
+    }
+    for (kk = 0; kk < kc; ++kk) {
+        const null_v8f v = null_splat8_f32(ar[kk * a_k]);
+        null_v8f q;
+        q = null_ld8_f32(p + kk * ldp) * v; c0 = c0 + q;
+        q = null_ld8_f32(p + kk * ldp + 8) * v; c1 = c1 + q;
+    }
+    null_st8_f32(y, c0);
+    null_st8_f32(y + 8, c1);
+}
+#endif
+
 /* NULL_TILE_M rows of a (ar[ii] points at a(row, k0)), one panel */
 static inline void null_tile_m_f32(const float* const* ar, int64_t a_k, const float* p, int64_t ldp,
                                    int64_t kc, float* y, int64_t ldy, int64_t nr, int first) {
     float acc[NULL_TILE_M][NULL_TILE_N];
     int64_t kk;
     int ii, jj;
+#ifdef NULL_TILE_VECTOR
+    if (nr == NULL_TILE_N) {
+        null_tile_m_v8_f32(ar, a_k, p, ldp, kc, y, ldy, first);
+        return;
+    }
+#endif
     for (ii = 0; ii < NULL_TILE_M; ++ii)
         for (jj = 0; jj < NULL_TILE_N; ++jj)
             acc[ii][jj] = !first && jj < nr ? y[ii * ldy + jj] : 0.0f;
@@ -131,6 +228,12 @@ static inline void null_tile_1_f32(const float* ar, int64_t a_k, const float* p,
     float acc[NULL_TILE_N];
     int64_t kk;
     int jj;
+#ifdef NULL_TILE_VECTOR
+    if (nr == NULL_TILE_N) {
+        null_tile_1_v8_f32(ar, a_k, p, ldp, kc, y, first);
+        return;
+    }
+#endif
     for (jj = 0; jj < NULL_TILE_N; ++jj) acc[jj] = !first && jj < nr ? y[jj] : 0.0f;
     for (kk = 0; kk < kc; ++kk) {
         const float* pk = p + kk * ldp;

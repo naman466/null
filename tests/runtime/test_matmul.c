@@ -215,6 +215,28 @@ static void test_gemm_blocked_matches_reference(void) {
     CHECK(mismatches == 0);
 }
 
+/* every product -0.0 (+0.0 times -0.0): a sum that starts at +0.0, as the
+   reference's does, stays +0.0, and one that started at -0.0 would end
+   -0.0. random values almost never make a whole sum of -0.0, so this checks
+   it on purpose, through whole tiles, single rows, narrow panels and sums
+   carried across chunks of k. conv's padding, packed as +0.0, relies on it */
+static void test_gemm_blocked_zero_sign(void) {
+    static float a[9 * 200], b[200 * 40], y[9 * 40];
+    const int64_t M = 9, N = 40, ks[2] = {1, 200};
+    int t, bad = 0;
+    int64_t i;
+    for (t = 0; t < 2; ++t) {
+        const int64_t K = ks[t];
+        for (i = 0; i < M * K; ++i) a[i] = 0.0f;
+        for (i = 0; i < K * N; ++i) b[i] = -0.0f;
+        for (i = 0; i < M * N; ++i) y[i] = 1.0f;
+        null_gemm_f32(a, b, NULL, y, M, N, K, 0, 0, 1.0f, 1.0f, 0, 0, 0);
+        for (i = 0; i < M * N; ++i)
+            if (!same_bits(y[i], 0.0f)) ++bad;
+    }
+    CHECK(bad == 0);
+}
+
 static void test_matmul_blocked_matches_reference(void) {
     static float a[3 * 20 * 30], b[3 * 30 * 20], y[3 * 20 * 20], want[3 * 20 * 20];
     int t, mismatches = 0;
@@ -245,5 +267,6 @@ static void run_matmul_tests(void) {
     test_matmul_batch_broadcast();
     test_matmul_summation_order();
     test_gemm_blocked_matches_reference();
+    test_gemm_blocked_zero_sign();
     test_matmul_blocked_matches_reference();
 }
