@@ -5,11 +5,13 @@
 # --reference-kernels: both must agree with onnx runtime, and with each other
 # bit for bit. when the optimiser folded a BatchNorm, which changes the
 # arithmetic, a third build, optimised but with --reference-kernels, must
-# give the first one's bits instead
+# give the first one's bits instead. with -DAVX2=ON the optimised C is also
+# built with -mavx2, where the kernels may take vector paths, and must give
+# the same bits as without
 #
 #   cmake -DNULLC=<nullc> -DMODEL=<model.onnx> -DVECTORS=<file.vectors>
 #         -DDRIVER=<run_vectors.c> -DOUT=<dir> -DCC=<c compiler>
-#         [-DTOLERANCE=<atol>,<rtol>] -P run_e2e.cmake
+#         [-DTOLERANCE=<atol>,<rtol>] [-DAVX2=ON] -P run_e2e.cmake
 
 file(MAKE_DIRECTORY "${OUT}")
 get_filename_component(name "${VECTORS}" NAME_WE)
@@ -29,7 +31,8 @@ if(UNIX)
 endif()
 
 # build and run one variant of the model: nullc with `flags`, the C with the
-# driver, the result checked against onnx runtime and written to <name>_<variant>.out
+# driver (and with `variant_cflags`, if set), the result checked against onnx
+# runtime and written to <name>_<variant>.out
 function(run_variant variant)
     set(flags ${ARGN})
     set(c_file "${OUT}/${name}_${variant}.c")
@@ -52,7 +55,7 @@ function(run_variant variant)
 
     execute_process(
         COMMAND "${CC}" -std=c99 -O2 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror
-                ${tolerance} "${c_file}" "${DRIVER}" -o "${exe}" ${libm}
+                ${variant_cflags} ${tolerance} "${c_file}" "${DRIVER}" -o "${exe}" ${libm}
         RESULT_VARIABLE code OUTPUT_VARIABLE out ERROR_VARIABLE err)
     if(NOT code EQUAL 0)
         message(FATAL_ERROR "building the generated model (${variant}) failed:\n${out}${err}")
@@ -79,6 +82,13 @@ endfunction()
 
 run_variant(opt)
 run_variant(noopt --no-opt --no-plan --reference-kernels)
+
+if(AVX2)
+    set(variant_cflags -mavx2)
+    run_variant(avx2)
+    set(variant_cflags "")
+    same_outputs(opt avx2 "the optimised build with and without -mavx2")
+endif()
 
 if(NOT changes_arithmetic)
     same_outputs(opt noopt "the optimised build and the unoptimised one with reference kernels")

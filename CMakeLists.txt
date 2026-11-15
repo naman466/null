@@ -122,6 +122,24 @@ add_test(NAME runtime_cpp COMMAND test_runtime_cpp)
 target_compile_options(test_runtime_c PRIVATE -ffp-contract=off)
 target_compile_options(test_runtime_cpp PRIVATE -ffp-contract=off)
 
+# kernels may take vector paths when the compiler targets avx2, so where this
+# machine can run avx2 code the c runtime tests are built a second time with
+# -mavx2, and every end-to-end test also builds its model that way and
+# requires the same bits
+include(CheckCSourceRuns)
+set(CMAKE_REQUIRED_FLAGS -mavx2)
+check_c_source_runs("int main(void) { return __builtin_cpu_supports(\"avx2\") ? 0 : 1; }" NULL_HOST_AVX2)
+unset(CMAKE_REQUIRED_FLAGS)
+if(NULL_HOST_AVX2)
+    add_executable(test_runtime_c_avx2 tests/runtime/test_kernels.c)
+    target_link_libraries(test_runtime_c_avx2 PRIVATE null_runtime)
+    target_compile_options(test_runtime_c_avx2 PRIVATE -mavx2 -ffp-contract=off)
+    target_compile_definitions(test_runtime_c_avx2 PRIVATE NULL_EXPECT_AVX2)
+    add_test(NAME runtime_c_avx2 COMMAND test_runtime_c_avx2)
+else()
+    message(STATUS "avx2 tests skipped: the compiler or this machine cannot build and run avx2 code")
+endif()
+
 # mutation fuzzer, a short fixed-seed run is part of ctest
 # longer runs: fuzz_frontend <iterations> <rng_seed>
 add_executable(fuzz_frontend tests/fuzz_frontend.cpp)
@@ -232,6 +250,7 @@ foreach(model relu linear mlp initializers_as_inputs hostile_names optimizable f
             "-DDRIVER=${CMAKE_CURRENT_SOURCE_DIR}/tests/e2e/run_vectors.c"
             "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/e2e"
             "-DCC=${CMAKE_C_COMPILER}"
+            "-DAVX2=${NULL_HOST_AVX2}"
             ${tolerance}
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_e2e.cmake")
 endforeach()

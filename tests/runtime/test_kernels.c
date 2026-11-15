@@ -1,8 +1,13 @@
 /*
  * tests for runtime/null_runtime.h, one file per part of the runtime
- * compiled twice: as C99 (test_runtime_c) and as C++ (test_runtime_cpp),
- * so the header is proven usable from both generated C and the compiler
+ * compiled as C99 (test_runtime_c) and as C++ (test_runtime_cpp), so the
+ * header is proven usable from both generated C and the compiler, and, where
+ * the machine has avx2, as C99 with -mavx2 (test_runtime_c_avx2), so vector
+ * paths are held to the same expectations as the plain loops
  */
+#if defined(NULL_EXPECT_AVX2) && !defined(__AVX2__)
+#error "test_runtime_c_avx2 must be built with avx2 enabled"
+#endif
 #include "check.h"
 
 #include "test_core.c"

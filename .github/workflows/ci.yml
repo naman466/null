@@ -1,7 +1,9 @@
 # build Null and run every ctest test: on Linux with gcc, normally and with the
 # undefined-behaviour sanitizer, and on Windows with MinGW g++. the end-to-end
 # tests compare against outputs recorded in the repository, so no Python is
-# needed. the Linux release build also runs the Cortex-M demo under qemu
+# needed. the Linux release build also runs the Cortex-M demo under qemu.
+# github's runners have avx2, so every job also runs the avx2 tests, and fails
+# if they were not configured
 name: ci
 
 on:
@@ -36,6 +38,8 @@ jobs:
       - name: check the cortex-m demo is a test
         if: matrix.name == 'release'
         run: ctest --test-dir build -N | grep demo_cortex_m_lenet
+      - name: check the avx2 tests are tests
+        run: ctest --test-dir build -N | grep runtime_c_avx2
       - name: build
         run: cmake --build build -j "$(nproc)"
       - name: test
@@ -56,6 +60,8 @@ jobs:
           install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
       - name: configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: check the avx2 tests are tests
+        run: ctest --test-dir build -N | grep runtime_c_avx2
       - name: build
         run: cmake --build build
       - name: test

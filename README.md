@@ -89,9 +89,11 @@ Along the way they found real bugs in Null, each fixed in its own commit, and de
 
 ### Tests
 
-110 `ctest` tests (with an Arm cross compiler and QEMU installed): 349 C++ test cases, 81 runtime kernel tests compiled as both C99 and C++, a protobuf fuzzer, command-line
-tests, a compile of every generated model as strict C99 (`-Wall -Wextra -Wpedantic -Werror`), and 33 end-to-end runs against
-ONNX Runtime, plus the Cortex-M demo. CI runs them on Linux (gcc, and gcc with the undefined-behaviour sanitizer) and on Windows (MinGW g++).
+111 `ctest` tests (with AVX2, an Arm cross compiler and QEMU): 349 C++ test cases, 81 runtime kernel tests compiled as C99, as C++
+and as C99 with `-mavx2`, a protobuf fuzzer, command-line tests, a compile of every generated model as strict C99 (`-Wall -Wextra
+-Wpedantic -Werror`), and 33 end-to-end runs against ONNX Runtime, each of which also builds its model with `-mavx2` and requires the
+same bits, plus the Cortex-M demo. CI runs them on Linux (gcc, and gcc with the undefined-behaviour sanitizer) and on Windows (MinGW
+g++).
 
 ---
 
