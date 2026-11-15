@@ -171,6 +171,34 @@ static inline void null_tile_m_v8_f32(const float* const* ar, int64_t a_k, const
     null_st8_f32(y3, c30); null_st8_f32(y3 + 8, c31);
 }
 
+/* a whole tile's rows, the panel's first 8 columns only */
+static inline void null_tile_m_v8h_f32(const float* const* ar, int64_t a_k, const float* p, int64_t ldp,
+                                       int64_t kc, float* y, int64_t ldy, int first) {
+    const float *r0 = ar[0], *r1 = ar[1], *r2 = ar[2], *r3 = ar[3];
+    null_v8f c0, c1, c2, c3;
+    int64_t kk;
+    if (first) {
+        c0 = c1 = c2 = c3 = null_splat8_f32(0.0f);
+    } else {
+        c0 = null_ld8_f32(y);
+        c1 = null_ld8_f32(y + ldy);
+        c2 = null_ld8_f32(y + 2 * ldy);
+        c3 = null_ld8_f32(y + 3 * ldy);
+    }
+    for (kk = 0; kk < kc; ++kk) {
+        const null_v8f b = null_ld8_f32(p + kk * ldp);
+        null_v8f q;
+        q = b * null_splat8_f32(r0[kk * a_k]); c0 = c0 + q;
+        q = b * null_splat8_f32(r1[kk * a_k]); c1 = c1 + q;
+        q = b * null_splat8_f32(r2[kk * a_k]); c2 = c2 + q;
+        q = b * null_splat8_f32(r3[kk * a_k]); c3 = c3 + q;
+    }
+    null_st8_f32(y, c0);
+    null_st8_f32(y + ldy, c1);
+    null_st8_f32(y + 2 * ldy, c2);
+    null_st8_f32(y + 3 * ldy, c3);
+}
+
 /* one row, a whole panel */
 static inline void null_tile_1_v8_f32(const float* ar, int64_t a_k, const float* p, int64_t ldp,
                                       int64_t kc, float* y, int first) {
@@ -191,20 +219,64 @@ static inline void null_tile_1_v8_f32(const float* ar, int64_t a_k, const float*
     null_st8_f32(y, c0);
     null_st8_f32(y + 8, c1);
 }
+
+/* the last panel of a product whose N is not a multiple of NULL_TILE_N:
+   nr < NULL_TILE_N columns. such a panel is always packed (see
+   null_gemm_blocked_f32), so p holds NULL_TILE_N columns, row stride
+   NULL_TILE_N, and the vectors may read all of them. the sums go through t,
+   whole rows, of which only the first nr columns reach y; with nr <= 8 only
+   one vector per row is computed. the columns past nr are computed and
+   dropped, each its own sum, so they cannot affect the others */
+static inline void null_tile_m_narrow_v8_f32(const float* const* ar, int64_t a_k, const float* p, int64_t kc,
+                                             float* y, int64_t ldy, int64_t nr, int first) {
+    float t[NULL_TILE_M * NULL_TILE_N];
+    int ii;
+    int64_t jj;
+    if (!first)
+        for (ii = 0; ii < NULL_TILE_M; ++ii)
+            for (jj = 0; jj < NULL_TILE_N; ++jj) t[ii * NULL_TILE_N + jj] = jj < nr ? y[ii * ldy + jj] : 0.0f;
+    if (nr <= 8)
+        null_tile_m_v8h_f32(ar, a_k, p, NULL_TILE_N, kc, t, NULL_TILE_N, first);
+    else
+        null_tile_m_v8_f32(ar, a_k, p, NULL_TILE_N, kc, t, NULL_TILE_N, first);
+    for (ii = 0; ii < NULL_TILE_M; ++ii)
+        for (jj = 0; jj < nr; ++jj) y[ii * ldy + jj] = t[ii * NULL_TILE_N + jj];
+}
+
+/* one row, a narrow panel, the same way */
+static inline void null_tile_1_narrow_v8_f32(const float* ar, int64_t a_k, const float* p, int64_t kc,
+                                             float* y, int64_t nr, int first) {
+    float t[NULL_TILE_N];
+    int64_t jj;
+    if (!first)
+        for (jj = 0; jj < NULL_TILE_N; ++jj) t[jj] = jj < nr ? y[jj] : 0.0f;
+    if (nr <= 8) {
+        null_v8f c = first ? null_splat8_f32(0.0f) : null_ld8_f32(t);
+        int64_t kk;
+        for (kk = 0; kk < kc; ++kk) {
+            const null_v8f q = null_ld8_f32(p + kk * NULL_TILE_N) * null_splat8_f32(ar[kk * a_k]);
+            c = c + q;
+        }
+        null_st8_f32(t, c);
+    } else {
+        null_tile_1_v8_f32(ar, a_k, p, NULL_TILE_N, kc, t, first);
+    }
+    for (jj = 0; jj < nr; ++jj) y[jj] = t[jj];
+}
 #endif
 
 /* NULL_TILE_M rows of a (ar[ii] points at a(row, k0)), one panel */
 static inline void null_tile_m_f32(const float* const* ar, int64_t a_k, const float* p, int64_t ldp,
                                    int64_t kc, float* y, int64_t ldy, int64_t nr, int first) {
+#ifdef NULL_TILE_VECTOR
+    if (nr == NULL_TILE_N)
+        null_tile_m_v8_f32(ar, a_k, p, ldp, kc, y, ldy, first);
+    else
+        null_tile_m_narrow_v8_f32(ar, a_k, p, kc, y, ldy, nr, first);
+#else
     float acc[NULL_TILE_M][NULL_TILE_N];
     int64_t kk;
     int ii, jj;
-#ifdef NULL_TILE_VECTOR
-    if (nr == NULL_TILE_N) {
-        null_tile_m_v8_f32(ar, a_k, p, ldp, kc, y, ldy, first);
-        return;
-    }
-#endif
     for (ii = 0; ii < NULL_TILE_M; ++ii)
         for (jj = 0; jj < NULL_TILE_N; ++jj)
             acc[ii][jj] = !first && jj < nr ? y[ii * ldy + jj] : 0.0f;
@@ -220,20 +292,21 @@ static inline void null_tile_m_f32(const float* const* ar, int64_t a_k, const fl
     }
     for (ii = 0; ii < NULL_TILE_M; ++ii)
         for (jj = 0; jj < nr; ++jj) y[ii * ldy + jj] = acc[ii][jj];
+#endif
 }
 
 /* one row of a, one panel: the rows left over after the whole tiles */
 static inline void null_tile_1_f32(const float* ar, int64_t a_k, const float* p, int64_t ldp,
                                    int64_t kc, float* y, int64_t nr, int first) {
+#ifdef NULL_TILE_VECTOR
+    if (nr == NULL_TILE_N)
+        null_tile_1_v8_f32(ar, a_k, p, ldp, kc, y, first);
+    else
+        null_tile_1_narrow_v8_f32(ar, a_k, p, kc, y, nr, first);
+#else
     float acc[NULL_TILE_N];
     int64_t kk;
     int jj;
-#ifdef NULL_TILE_VECTOR
-    if (nr == NULL_TILE_N) {
-        null_tile_1_v8_f32(ar, a_k, p, ldp, kc, y, first);
-        return;
-    }
-#endif
     for (jj = 0; jj < NULL_TILE_N; ++jj) acc[jj] = !first && jj < nr ? y[jj] : 0.0f;
     for (kk = 0; kk < kc; ++kk) {
         const float* pk = p + kk * ldp;
@@ -244,6 +317,7 @@ static inline void null_tile_1_f32(const float* ar, int64_t a_k, const float* p,
         }
     }
     for (jj = 0; jj < nr; ++jj) y[jj] = acc[jj];
+#endif
 }
 
 /* b given directly as row-major [K, N] with row stride ldb */
