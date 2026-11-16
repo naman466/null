@@ -3,7 +3,9 @@
  * compiled as C99 (test_runtime_c) and as C++ (test_runtime_cpp), so the
  * header is proven usable from both generated C and the compiler, and, where
  * the machine has avx2, as C99 with -mavx2 (test_runtime_c_avx2), so vector
- * paths are held to the same expectations as the plain loops
+ * paths are held to the same expectations as the plain loops. on x86 the
+ * default build takes the sse2 vector path, so a fourth build hides the
+ * vector instructions (test_runtime_c_plain) to test the plain loops
  */
 #if defined(NULL_EXPECT_AVX2) && !defined(__AVX2__)
 #error "test_runtime_c_avx2 must be built with avx2 enabled"
@@ -19,6 +21,10 @@
 #include "test_reduce.c"
 #include "test_norm.c"
 #include "test_layout.c"
+
+#if defined(NULL_EXPECT_PLAIN) && defined(NULL_TILE_VW)
+#error "test_runtime_c_plain must test the plain loops"
+#endif
 
 int main(void) {
     run_core_tests();

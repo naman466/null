@@ -122,6 +122,15 @@ add_test(NAME runtime_cpp COMMAND test_runtime_cpp)
 target_compile_options(test_runtime_c PRIVATE -ffp-contract=off)
 target_compile_options(test_runtime_cpp PRIVATE -ffp-contract=off)
 
+# on x86 the gemm tile uses gcc's vector types; the plain loops that other
+# compilers and targets use are tested by a third build that hides the
+# vector instructions from the runtime
+add_executable(test_runtime_c_plain tests/runtime/test_kernels.c)
+target_link_libraries(test_runtime_c_plain PRIVATE null_runtime)
+target_compile_options(test_runtime_c_plain PRIVATE -ffp-contract=off -U__SSE2__ -U__AVX__)
+target_compile_definitions(test_runtime_c_plain PRIVATE NULL_EXPECT_PLAIN)
+add_test(NAME runtime_c_plain COMMAND test_runtime_c_plain)
+
 # kernels may take vector paths when the compiler targets avx2, so where this
 # machine can run avx2 code the c runtime tests are built a second time with
 # -mavx2, and every end-to-end test also builds its model that way and
