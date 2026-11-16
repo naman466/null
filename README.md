@@ -49,18 +49,19 @@ Batch 1, one thread, on a laptop x86-64 CPU; ONNX Runtime 1.31 with every graph 
 
 | Model | ONNX Runtime | Null `-O2` | Null `-O2`, reference kernels | Null `-O3 -march=native` |
 |---|---:|---:|---:|---:|
-| ResNet-18, 224×224 | 75 ms | 662 ms | 3152 ms | 305 ms |
-| MobileNetV2, 224×224 | 16 ms | 115 ms | 966 ms | 84 ms |
-| LeNet-5 | 0.087 ms | 0.226 ms | 0.452 ms | 0.204 ms |
-| Transformer encoder layer | 0.099 ms | 0.064 ms | 0.097 ms | 0.077 ms |
-| MLP (784-32-10) | 0.035 ms | 0.012 ms | 0.040 ms | 0.057 ms |
+| ResNet-18, 224×224 | 66 ms | 252 ms | 2960 ms | 122 ms |
+| MobileNetV2, 224×224 | 15 ms | 54 ms | 892 ms | 31 ms |
+| LeNet-5 | 0.080 ms | 0.133 ms | 0.415 ms | 0.083 ms |
+| Transformer encoder layer | 0.091 ms | 0.043 ms | 0.092 ms | 0.032 ms |
+| MLP (784-32-10) | 0.033 ms | 0.006 ms | 0.038 ms | 0.004 ms |
 
-The GEMM and convolution kernels compute tiles of outputs at once over cache-sized panels, and the C compiler vectorises them, which
-makes full-size networks 5 to 12 times faster than the plain loops. Each output is still the same sum in the same order, so the fast
-and plain kernels give **the same bits** (any NaN result is a NaN in both), which every end-to-end test checks. Small fully connected
-models beat ONNX Runtime, whose per-operator overhead dominates there; on convolutional networks ONNX Runtime's hand-written AVX2 and
-FMA kernels are still 4 to 9 times faster than portable C. (The MLP's `-O3` time is a gcc 15 quirk: its interprocedural constant
-propagation specialises the tile for that layer badly; `-O2 -march=native` runs it in 0.005 ms.)
+The GEMM and convolution kernels compute tiles of outputs at once over cache-sized panels. With gcc or clang on x86, each tile's
+sums stay in vector registers: SSE2, which every x86-64 target has, in a plain `-O2` build, and AVX when the compiler targets it.
+Other compilers and targets get the same tiles as plain C99 loops. That makes full-size networks 12 to 28 times faster than the
+plain one-output-at-a-time loops. Each output is still the same sum in the same order, so the fast and plain kernels give **the
+same bits** (any NaN result is a NaN in both), which every end-to-end test checks. Small models beat ONNX Runtime, whose
+per-operator overhead dominates there. On full-size convolutional networks, ONNX Runtime's hand-written AVX2 and FMA kernels are
+about 2 times faster than Null's `-march=native` build, and 4 times faster than its default build.
 
 ### On a microcontroller
 
@@ -109,8 +110,8 @@ Cast are supported.
 fusion into Gemm and Conv, BatchNorm folding into Conv, Linear weights transposed at compile time, static memory planning, and
 blocked GEMM and convolution kernels.
 
-**Not yet:** integer or boolean data at run time, control flow, multithreading, and kernels for a particular instruction set: the
-runtime is portable C99 that the C compiler vectorises.
+**Not yet:** integer or boolean data at run time, control flow, multithreading, and kernels written for a particular instruction
+set: the runtime is portable C99, with GNU C vector types (no intrinsics) for gcc and clang on x86.
 
 ---
 
@@ -124,7 +125,8 @@ runtime is portable C99 that the C compiler vectorises.
 4. **Code generation:** liveness analysis, a greedy memory plan into one static arena, and C that calls the runtime's kernels
    with every shape and stride as a constant. Only the parts of the runtime a model uses are embedded.
 5. **Runtime:** header-only C99 kernels. GEMM and convolution work on 4 × 16 tiles of outputs over cache-sized panels, with each
-   output's sum in the same order as the plain reference loops, so they are several times faster and give the same bits.
+   output's sum in the same order as the plain reference loops, so they are several times faster and give the same bits; with
+   gcc or clang on x86 the sums stay in SSE2 or AVX registers. Depthwise convolution adds each filter tap along whole rows.
 
 ## Project structure
 

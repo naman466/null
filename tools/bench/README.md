@@ -34,51 +34,49 @@ like a Reshape that only renames its input, are left out.
 ```
 
 ```text
-ResNet-18 (224x224): 881.841 ms per run, mean of 10 (cflags -O2 -ffp-contract=off)
+resnet18.onnx: 251.036 ms per run, mean of 10 (cflags -O2 -ffp-contract=off)
 
 step                         op                 work                                ms  share  GFLOP/s
-/layer4/layer4.1/conv2/Conv  Conv               512->512 3x3 7x7                  68.3   7.7%      3.4
-/layer4/layer4.1/conv1/Conv  Conv               512->512 3x3 7x7                  67.1   7.6%      3.4
+/layer4/layer4.1/conv1/Conv  Conv               512->512 3x3 7x7                  18.7   7.4%     12.4
+/layer4/layer4.1/conv2/Conv  Conv               512->512 3x3 7x7                  18.1   7.2%     12.8
 ...
 by operator          steps        ms  share  GFLOP/s
-Conv                    20     874.9  99.2%      4.1
-MaxPool                  1     5.482   0.6%
+Conv                    20     246.4  98.1%     14.7
+MaxPool                  1     3.839   1.5%
 ```
 
-On both full-size networks, convolutions take 97 to 99% of the time, and they run at 3 to 5 GFLOP/s whatever their shape. When speed
-doesn't change with shape, the inner kernel is the limit, not memory or the packing.
+On both full-size networks, convolutions take 97 to 99% of the time. Before the GEMM tile kept its sums in vector registers, every
+convolution ran at 3 to 5 GFLOP/s whatever its shape, which pointed at the inner kernel. Now they run at 12 to 17 GFLOP/s with SSE2
+and 25 to 33 with AVX. A taller tile no longer makes them faster, and patch packing is about a sixth of ResNet-18's time.
 
 ## Results
 
-Measured on 2026-11-10 on a laptop x86-64 CPU (Windows, gcc 15.2, onnxruntime 1.31.1).
+Measured on 2026-11-16 on a laptop x86-64 CPU (Windows, gcc 15.2, onnxruntime 1.31.1).
 
-Built with `-O2 -ffp-contract=off`, the default:
-
-| Model | ONNX Runtime | Null, blocked | Null, reference | blocked vs reference | Null vs ONNX Runtime |
-|---|---:|---:|---:|---:|---:|
-| MLP (784-32-10) | 0.035 ms | 0.012 ms | 0.040 ms | 3.4× faster | 2.9× faster |
-| LeNet-5 | 0.087 ms | 0.226 ms | 0.452 ms | 2.0× faster | 2.6× slower |
-| Transformer layer (d=32) | 0.099 ms | 0.064 ms | 0.097 ms | 1.5× faster | 1.6× faster |
-| MobileNetV2 (¼ width, 64×64) | 0.490 ms | 2.5 ms | 9.4 ms | 3.8× faster | 5.1× slower |
-| ResNet-18 (⅛ width, 64×64) | 0.333 ms | 2.1 ms | 5.8 ms | 2.7× faster | 6.4× slower |
-| ResNet-18 (224×224) | 74.8 ms | 662 ms | 3152 ms | 4.8× faster | 8.9× slower |
-| MobileNetV2 (224×224) | 15.6 ms | 115 ms | 966 ms | 8.4× faster | 7.4× slower |
-
-With `-O3 -march=native -ffp-contract=off`, which lets gcc use AVX2 (but still not FMA):
+Built with `-O2 -ffp-contract=off`, the default, which on x86-64 gives the kernels SSE2's vector registers:
 
 | Model | ONNX Runtime | Null, blocked | Null, reference | blocked vs reference | Null vs ONNX Runtime |
 |---|---:|---:|---:|---:|---:|
-| MLP (784-32-10) | 0.036 ms | 0.057 ms | 0.041 ms | 0.7× | 1.6× slower |
-| LeNet-5 | 0.087 ms | 0.204 ms | 0.435 ms | 2.1× faster | 2.4× slower |
-| Transformer layer (d=32) | 0.099 ms | 0.077 ms | 0.086 ms | 1.1× faster | 1.3× faster |
-| MobileNetV2 (¼ width, 64×64) | 0.399 ms | 1.5 ms | 9.4 ms | 6.2× faster | 3.8× slower |
-| ResNet-18 (⅛ width, 64×64) | 0.315 ms | 1.5 ms | 3.4 ms | 2.4× faster | 4.6× slower |
-| ResNet-18 (224×224) | 72.9 ms | 305 ms | 2787 ms | 9.1× faster | 4.2× slower |
-| MobileNetV2 (224×224) | 16.5 ms | 83.9 ms | 996 ms | 11.9× faster | 5.1× slower |
+| MLP (784-32-10) | 0.033 ms | 0.006 ms | 0.038 ms | 5.9× faster | 5.1× faster |
+| LeNet-5 | 0.080 ms | 0.133 ms | 0.415 ms | 3.1× faster | 1.7× slower |
+| Transformer layer (d=32) | 0.091 ms | 0.043 ms | 0.092 ms | 2.1× faster | 2.1× faster |
+| MobileNetV2 (¼ width, 64×64) | 0.375 ms | 1.2 ms | 8.6 ms | 7.2× faster | 3.2× slower |
+| ResNet-18 (⅛ width, 64×64) | 0.281 ms | 1.2 ms | 5.3 ms | 4.2× faster | 4.4× slower |
+| ResNet-18 (224×224) | 66.3 ms | 252 ms | 2960 ms | 11.7× faster | 3.8× slower |
+| MobileNetV2 (224×224) | 15.1 ms | 53.5 ms | 892 ms | 16.7× faster | 3.5× slower |
+
+With `-O3 -march=native -ffp-contract=off`, which gives them AVX2 (but still not FMA):
+
+| Model | ONNX Runtime | Null, blocked | Null, reference | blocked vs reference | Null vs ONNX Runtime |
+|---|---:|---:|---:|---:|---:|
+| MLP (784-32-10) | 0.033 ms | 0.004 ms | 0.038 ms | 9.1× faster | 7.8× faster |
+| LeNet-5 | 0.079 ms | 0.083 ms | 0.403 ms | 4.9× faster | 1.0× slower |
+| Transformer layer (d=32) | 0.092 ms | 0.032 ms | 0.082 ms | 2.6× faster | 2.9× faster |
+| MobileNetV2 (¼ width, 64×64) | 0.370 ms | 1.0 ms | 8.7 ms | 8.5× faster | 2.8× slower |
+| ResNet-18 (⅛ width, 64×64) | 0.288 ms | 0.802 ms | 3.2 ms | 4.0× faster | 2.8× slower |
+| ResNet-18 (224×224) | 65.5 ms | 122 ms | 2497 ms | 20.4× faster | 1.9× slower |
+| MobileNetV2 (224×224) | 14.6 ms | 31.0 ms | 876 ms | 28.2× faster | 2.1× slower |
 
 Every model's blocked and reference outputs were identical, and their largest difference from ONNX Runtime is the same as the
 end-to-end tests report.
-
-The MLP's `-O3 -march=native` time is a gcc 15 quirk: interprocedural constant propagation (`-fipa-cp`) specialises the one-row tile
-for that layer badly; `-O2 -march=native` runs it in 0.005 ms, and so does `-O3 -march=native -fno-ipa-cp`.
 
