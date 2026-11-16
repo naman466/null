@@ -103,6 +103,8 @@ static void test_conv_against_reference(void) {
         {1, 2, 6, 7, 3, 2, 4, 1, 2, 1, 1, 0, 0, 2},     /* asymmetric */
         {1, 1, 28, 28, 6, 5, 5, 1, 1, 1, 2, 2, 2, 2},   /* lenet conv1 */
         {1, 3, 4, 4, 2, 1, 1, 1, 1, 1, 0, 0, 0, 0},     /* pointwise */
+        {1, 2, 5, 37, 2, 3, 3, 2, 1, 1, 1, 1, 1, 1},    /* depthwise, rows of several vectors */
+        {1, 3, 6, 40, 3, 3, 3, 3, 2, 2, 2, 1, 0, 3},    /* depthwise, strided, dilated, uneven padding */
     };
     static float x[4096], w[2048], b[16], y[8192], want[8192];
     size_t k;

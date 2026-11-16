@@ -147,57 +147,57 @@ static inline void null_pack_patches_f32(const void* ctx, int64_t k0, int64_t kc
 
 /* a group with too few filters to fill a tile (depthwise convolution has
    one): packing patches would cost as much as the product, so each filter
-   slides over the image directly, NULL_CONV_ROW outputs of a row at a time.
-   positions in the padding are skipped, as in the reference loops */
-#define NULL_CONV_ROW 8
-
+   slides over the image directly. for each row of the output and each
+   position (ci, r, s) of the filter, in the reference's order, the products
+   are added along the whole row, into y: so every output's sum is built in
+   the same order, from +0, and an output whose input at (ci, r, s) is in the
+   padding is not touched, as in the reference. the row stays in cache. with
+   vector types (matmul.h) a stride-1 row goes a vector at a time */
 static inline void null_conv2d_direct_f32(const float* xg, const float* wm, float* ym,
                                           const null_conv2d_params* p, int64_t cg) {
-    int64_t oh, ow0, ci, r, s;
-    int jj;
-    for (oh = 0; oh < p->out_h; ++oh)
-        for (ow0 = 0; ow0 < p->out_w; ow0 += NULL_CONV_ROW) {
-            const int owb = (int)(p->out_w - ow0 < NULL_CONV_ROW ? p->out_w - ow0 : NULL_CONV_ROW);
-            float acc[NULL_CONV_ROW];
-            for (jj = 0; jj < NULL_CONV_ROW; ++jj) acc[jj] = 0.0f;
-            for (ci = 0; ci < cg; ++ci) {
-                const float* xc = xg + ci * p->h * p->w;
-                for (r = 0; r < p->kh; ++r) {
-                    const int64_t ih = oh * p->stride_h - p->pad_top + r * p->dil_h;
-                    const float* xr = xc + ih * p->w;
-                    const float* wr = wm + (ci * p->kh + r) * p->kw;
-                    if (ih < 0 || ih >= p->h) continue;
-                    for (s = 0; s < p->kw; ++s) {
-                        const int64_t iw0 = ow0 * p->stride_w - p->pad_left + s * p->dil_w;
-                        const float wv = wr[s];
-                        if (owb == NULL_CONV_ROW && iw0 >= 0 && iw0 + (NULL_CONV_ROW - 1) * p->stride_w < p->w) {
-                            /* the whole row inside the image */
-                            if (p->stride_w == 1) {
-                                const float* xs = xr + iw0;
-                                for (jj = 0; jj < NULL_CONV_ROW; ++jj) {
-                                    float prod = xs[jj] * wv;
-                                    acc[jj] = acc[jj] + prod;
-                                }
-                            } else {
-                                for (jj = 0; jj < NULL_CONV_ROW; ++jj) {
-                                    float prod = xr[iw0 + jj * p->stride_w] * wv;
-                                    acc[jj] = acc[jj] + prod;
-                                }
-                            }
-                        } else {
-                            for (jj = 0; jj < owb; ++jj) {
-                                const int64_t iw = iw0 + jj * p->stride_w;
-                                float prod;
-                                if (iw < 0 || iw >= p->w) continue;
-                                prod = xr[iw] * wv;
-                                acc[jj] = acc[jj] + prod;
-                            }
+    const int64_t sw = p->stride_w;
+    int64_t oh, ow, ci, r, s;
+    for (oh = 0; oh < p->out_h; ++oh) {
+        float* yr = ym + oh * p->out_w;
+        for (ow = 0; ow < p->out_w; ++ow) yr[ow] = 0.0f;
+        for (ci = 0; ci < cg; ++ci) {
+            const float* xc = xg + ci * p->h * p->w;
+            for (r = 0; r < p->kh; ++r) {
+                const int64_t ih = oh * p->stride_h - p->pad_top + r * p->dil_h;
+                const float* xr;
+                const float* wr = wm + (ci * p->kh + r) * p->kw;
+                if (ih < 0 || ih >= p->h) continue;
+                xr = xc + ih * p->w;
+                for (s = 0; s < p->kw; ++s) {
+                    /* input column of output ow: iw0 + ow * sw, inside [0, w) for ow in [lo, hi) */
+                    const int64_t iw0 = s * p->dil_w - p->pad_left;
+                    const int64_t lo = iw0 >= 0 ? 0 : (-iw0 + sw - 1) / sw;
+                    const int64_t last = iw0 > p->w - 1 ? -1 : (p->w - 1 - iw0) / sw;
+                    const int64_t hi = last + 1 < p->out_w ? last + 1 : p->out_w;
+                    const float wv = wr[s];
+                    ow = lo;
+                    if (sw == 1) {
+#ifdef NULL_TILE_VW
+                        const null_vf wvv = null_splat_f32(wv);
+                        for (; ow + NULL_TILE_VW <= hi; ow += NULL_TILE_VW) {
+                            const null_vf q = null_ldv_f32(xr + iw0 + ow) * wvv;
+                            null_stv_f32(yr + ow, null_ldv_f32(yr + ow) + q);
+                        }
+#endif
+                        for (; ow < hi; ++ow) {
+                            float prod = xr[iw0 + ow] * wv;
+                            yr[ow] = yr[ow] + prod;
+                        }
+                    } else {
+                        for (; ow < hi; ++ow) {
+                            float prod = xr[iw0 + ow * sw] * wv;
+                            yr[ow] = yr[ow] + prod;
                         }
                     }
                 }
             }
-            for (jj = 0; jj < owb; ++jj) ym[oh * p->out_w + ow0 + jj] = acc[jj];
         }
+    }
 }
 
 /* null_conv2d_ref_f32's contract and bits, as matrix products */
