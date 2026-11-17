@@ -374,21 +374,63 @@ static inline void null_pack_cols_f32(const void* ctx, int64_t k0, int64_t kc, i
             out[kk * NULL_TILE_N + jj] = jj < nr ? c->b[(j0 + jj) * c->ldb + k0 + kk] : 0.0f;
 }
 
+/* fewer rows than a tile, b row-major [K, N] with row stride ldb, K > 0,
+   the columns past the last whole panel: such a panel would be packed and
+   used by no more than three rows, and packing it costs more than the
+   product. each row of y is built in place instead, adding
+   b's row k times a(i, k) for k = 0, 1, ...: every output's sum in the
+   reference's order, from +0. the row of y stays in cache, and the loop
+   along it is long and contiguous */
+static inline void null_gemm_rows_f32(const float* a, int64_t a_i, int64_t a_k, const float* b, int64_t ldb,
+                                      float* y, int64_t ldy, int64_t M, int64_t N, int64_t K) {
+    int64_t i, j, k;
+    for (i = 0; i < M; ++i) {
+        float* yi = y + i * ldy;
+        for (j = 0; j < N; ++j) yi[j] = 0.0f;
+        for (k = 0; k < K; ++k) {
+            const float av = a[i * a_i + k * a_k];
+            const float* bk = b + k * ldb;
+            j = 0;
+#ifdef NULL_TILE_VW
+            {
+                const null_vf v = null_splat_f32(av);
+                for (; j + NULL_TILE_VW <= N; j += NULL_TILE_VW) {
+                    const null_vf q = v * null_ldv_f32(bk + j);
+                    null_stv_f32(yi + j, null_ldv_f32(yi + j) + q);
+                }
+            }
+#endif
+            for (; j < N; ++j) {
+                float prod = av * bk[j];
+                yi[j] = yi[j] + prod;
+            }
+        }
+    }
+}
+
 /* the raw sums; with direct non-NULL, whole panels are read from it in
    place (row-major [K, N], row stride ldd) and only the last, narrower
-   panel goes through pack. K = 0 gives sums of 0 */
+   panel goes through pack, or, with fewer rows than a tile, through
+   null_gemm_rows_f32. K = 0 gives sums of 0 */
 static inline void null_gemm_blocked_f32(const float* a, int64_t a_i, int64_t a_k,
                                          const float* direct, int64_t ldd,
                                          null_pack_fn pack, const void* ctx,
                                          float* y, int64_t ldy, int64_t M, int64_t N, int64_t K) {
     float panel[NULL_TILE_K * NULL_TILE_N];
+    int64_t n_tiles = N;      /* the columns done in panels */
     int64_t j0, k0, i0, i;
     if (K == 0) {
         for (i = 0; i < M; ++i)
             for (j0 = 0; j0 < N; ++j0) y[i * ldy + j0] = 0.0f;
         return;
     }
-    for (j0 = 0; j0 < N; j0 += NULL_TILE_N) {
+    /* fewer rows than a tile and b direct: whole panels as usual, read in
+       place, and the narrow rest without packing */
+    if (direct && M < NULL_TILE_M) {
+        n_tiles = N / NULL_TILE_N * NULL_TILE_N;
+        if (n_tiles < N) null_gemm_rows_f32(a, a_i, a_k, direct + n_tiles, ldd, y + n_tiles, ldy, M, N - n_tiles, K);
+    }
+    for (j0 = 0; j0 < n_tiles; j0 += NULL_TILE_N) {
         const int64_t nr = N - j0 < NULL_TILE_N ? N - j0 : NULL_TILE_N;
         for (k0 = 0; k0 < K; k0 += NULL_TILE_K) {
             const int64_t kc = K - k0 < NULL_TILE_K ? K - k0 : NULL_TILE_K;
